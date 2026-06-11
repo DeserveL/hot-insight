@@ -187,6 +187,37 @@ class SourceParsingTests(unittest.TestCase):
 
         self.assertIn("热点 A", context)
         self.assertIn("官方详情摘要内容", context)
+        self.assertIn("\n\n", context)
+
+    def test_official_detail_context_keeps_paragraphs_and_deduplicates(self) -> None:
+        html = """
+        <html><body>
+          <div class="list_title_s">热点 A</div>
+          <div class="des_main">
+            <p>第一段事实。</p>
+            <p>第二段背景。</p>
+            <p>第二段背景。</p>
+          </div>
+          <div class="des_main">展开</div>
+        </body></html>
+        """
+
+        context = parse_weibo_official_detail_context(html)
+
+        self.assertEqual(context.count("第二段背景。"), 1)
+        self.assertEqual(context.split("\n\n"), ["热点 A", "第一段事实。", "第二段背景。"])
+
+    def test_official_detail_context_truncates_long_excerpt(self) -> None:
+        html = f"""
+        <html><body>
+          <div class="des_main"><p>{"长内容" * 100}</p></div>
+        </body></html>
+        """
+
+        context = parse_weibo_official_detail_context(html, max_chars=80)
+
+        self.assertLessEqual(len(context), 80)
+        self.assertTrue(context.endswith("…"))
 
     def test_official_detail_material_extracts_cover_image(self) -> None:
         html = """

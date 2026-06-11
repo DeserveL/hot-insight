@@ -427,16 +427,19 @@ def parse_weibo_official_detail_material(html: str, *, max_excerpt_chars: int = 
 def parse_weibo_official_detail_context(html: str, *, max_chars: int = 1200) -> str:
     soup = BeautifulSoup(html, "html.parser")
     parts: list[str] = []
-    for selector in (".list_title_s", ".des_main"):
-        for element in soup.select(selector):
-            text = _normalize_space(element.get_text(" ", strip=True))
-            if text and text not in parts:
-                parts.append(text)
+
+    for element in soup.select(".list_title_s"):
+        _append_unique_context_part(parts, element.get_text(" ", strip=True))
+
+    for element in soup.select(".des_main"):
+        for text in _extract_detail_paragraphs(element):
+            _append_unique_context_part(parts, text)
+
     if not parts:
         title = soup.find("title")
         if title is not None:
-            parts.append(_normalize_space(title.get_text(" ", strip=True)))
-    return _truncate_context("\n".join(parts), max_chars)
+            _append_unique_context_part(parts, title.get_text(" ", strip=True))
+    return _truncate_context("\n\n".join(parts[:8]), max_chars)
 
 
 def parse_weibo_official_cover_image_url(html: str) -> str:
@@ -590,3 +593,51 @@ def _truncate_context(text: str, max_chars: int) -> str:
     if len(text) <= max_chars:
         return text
     return text[: max(max_chars - 1, 0)] + "…"
+
+
+def _extract_detail_paragraphs(element: Tag) -> list[str]:
+    paragraphs: list[str] = []
+
+    for node in element.find_all(["p", "li"], recursive=True):
+        _append_unique_context_part(paragraphs, node.get_text(" ", strip=True))
+
+    if not paragraphs:
+        for node in element.find_all("div", recursive=True):
+            if node.find(["div", "p", "li"]):
+                continue
+            _append_unique_context_part(paragraphs, node.get_text(" ", strip=True))
+
+    if not paragraphs:
+        text = element.get_text("\n", strip=True)
+        for line in text.splitlines():
+            _append_unique_context_part(paragraphs, line)
+
+    return paragraphs
+
+
+def _append_unique_context_part(parts: list[str], text: str) -> None:
+    normalized = _normalize_context_part(text)
+    if not normalized or _is_context_noise(normalized):
+        return
+    if any(normalized == part or normalized in part for part in parts):
+        return
+    for index, part in enumerate(parts):
+        if part in normalized:
+            parts[index] = normalized
+            return
+    parts.append(normalized)
+
+
+def _normalize_context_part(text: str) -> str:
+    text = unescape(text)
+    text = re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"(展开|收起|查看全文)$", "", text).strip()
+    return text
+
+
+def _is_context_noise(text: str) -> bool:
+    if text in {"展开", "收起", "查看全文", "更多", "加载中"}:
+        return True
+    if len(text) <= 1:
+        return True
+    return False
