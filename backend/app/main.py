@@ -26,6 +26,7 @@ async def lifespan(app: FastAPI):
         file_path=config.log_file_path,
         file_max_bytes=config.log_file_max_bytes,
         file_backup_count=config.log_file_backup_count,
+        time_zone=config.app_time_zone,
     )
     app.state.config = config
     scheduler_task = None
@@ -109,6 +110,7 @@ def runtime_config_summary(config: AppConfig, scheduler_enabled: bool) -> dict[s
         "database_path": str(config.database_path),
         "scheduler_enabled": scheduler_enabled,
         "schedule_minutes": config.schedule_minutes,
+        "app_time_zone": config.app_time_zone,
         "source_order": list(config.weibo_source_order),
         "weibo_official_timeout_seconds": config.weibo_official_timeout_seconds,
         "weibo_official_visitor_timeout_seconds": config.weibo_official_visitor_timeout_seconds,

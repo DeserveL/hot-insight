@@ -8,7 +8,7 @@ from typing import Protocol
 import requests
 
 from backend.app.core.config import AppConfig
-from backend.app.core.logging import redact_sensitive_text
+from backend.app.core.logging import mask_external_target, redact_sensitive_text
 from backend.app.db.repositories import AppRepository
 from backend.app.domain.models import AIDetail, TopicCandidate, topic_detail_url
 from backend.app.services.notifications.telegram import TelegramNotifier, TelegramSendResult
@@ -141,7 +141,7 @@ class NotificationRouter:
         self.public_site_url = public_site_url
         logger.info(
             "通知路由初始化完成: enabled_targets=%s public_site_url_configured=%s",
-            ",".join(f"{provider.provider}:{provider.target}" for provider in self.providers) or "无",
+            ",".join(_format_target(provider.provider, provider.target) for provider in self.providers) or "无",
             bool(public_site_url),
         )
 
@@ -169,7 +169,7 @@ class NotificationRouter:
                 topic.id,
                 topic.title,
                 provider.provider,
-                provider.target,
+                mask_external_target(provider.provider, provider.target),
             )
             try:
                 raw_result = provider.send_topic(topic, alert_tags, ai_detail, ai_error, detail_url)
@@ -185,7 +185,7 @@ class NotificationRouter:
                     "通知目标发送完成: topic_id=%s provider=%s target=%s success=%s external_message_id=%s duration_ms=%.1f error=%s",
                     topic.id,
                     result.provider,
-                    result.target,
+                    mask_external_target(result.provider, result.target),
                     result.success,
                     result.external_message_id or "-",
                     (time.perf_counter() - started) * 1000,
@@ -198,7 +198,7 @@ class NotificationRouter:
                     topic.id,
                     topic.title,
                     provider.provider,
-                    provider.target,
+                    mask_external_target(provider.provider, provider.target),
                     error_message,
                 )
                 results.append(DeliveryResult(provider.provider, provider.target, False, error_message, ""))
@@ -223,7 +223,7 @@ class NotificationRouter:
                 logger.info(
                     "健康告警通知完成: provider=%s target=%s success=%s external_message_id=%s error=%s",
                     result.provider,
-                    result.target,
+                    mask_external_target(result.provider, result.target),
                     result.success,
                     result.external_message_id or "-",
                     result.error_message or "-",
@@ -232,7 +232,7 @@ class NotificationRouter:
                 logger.error(
                     "健康告警通知异常: provider=%s target=%s error=%s",
                     provider.provider,
-                    provider.target,
+                    mask_external_target(provider.provider, provider.target),
                     redact_sensitive_text(exc),
                 )
         return sent
@@ -256,3 +256,7 @@ def build_notification_router(
             )
         )
     return NotificationRouter(providers, config.public_site_url)
+
+
+def _format_target(provider: str, target: str) -> str:
+    return f"{provider}:{mask_external_target(provider, target)}"

@@ -15,6 +15,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.alert_tags, ("爆", "沸"))
         self.assertEqual(config.tag_recurrence_hours, {"爆": 12, "沸": 12, "热": 24})
         self.assertEqual(config.database_path, Path("data/hot_insight.sqlite3"))
+        self.assertEqual(config.app_time_zone, "Asia/Shanghai")
         self.assertEqual(config.weibo_source_order[0], "weibo_official")
         self.assertTrue(config.log_file_enabled)
         self.assertEqual(config.log_file_path, Path("data/logs/hot-insight.log"))
@@ -79,6 +80,17 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.weibo_official_visitor_timeout_seconds, 4)
         self.assertEqual(config.weibo_official_realtime_timeout_seconds, 3)
         self.assertEqual(config.weibo_official_max_retries, 4)
+
+    def test_app_time_zone_is_configurable(self) -> None:
+        with patch.dict(os.environ, {"APP_TIME_ZONE": "UTC"}, clear=True):
+            config = AppConfig.from_env(env_file=None)
+
+        self.assertEqual(config.app_time_zone, "UTC")
+
+    def test_invalid_app_time_zone_raises_clear_error(self) -> None:
+        with patch.dict(os.environ, {"APP_TIME_ZONE": "Not/AZone"}, clear=True):
+            with self.assertRaisesRegex(ValueError, "APP_TIME_ZONE"):
+                AppConfig.from_env(env_file=None)
 
     def test_log_file_options_are_configurable(self) -> None:
         with patch.dict(

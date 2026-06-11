@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Iterable, Mapping
 from urllib.parse import urlparse
 
+from backend.app.core.logging import mask_external_target
 from backend.app.db.connection import connect
 from backend.app.db.schema import SCHEMA_SQL
 from backend.app.domain.models import (
@@ -369,7 +370,7 @@ class AppRepository:
             "通知投递状态已记录: topic_id=%s provider=%s target=%s status=%s external_message_id=%s",
             topic.id,
             provider,
-            target,
+            mask_external_target(provider, target),
             "success" if success else "failed",
             external_message_id or "-",
         )

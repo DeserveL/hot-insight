@@ -49,6 +49,7 @@ TAG_RECURRENCE_HOURS=爆:12,沸:12,热:24
 NOTIFY_CHANNELS=wecom,telegram
 SCHEDULE_MINUTES=30
 MAX_TOPICS_PER_RUN=10
+APP_TIME_ZONE=Asia/Shanghai
 ```
 
 ### 2. 安装后端依赖
@@ -107,6 +108,7 @@ http://localhost:3000
 | `WEIBO_OFFICIAL_REALTIME_TIMEOUT_SECONDS` | 微博官方详情映射页请求超时时间，单位秒 | `15` |
 | `WEIBO_OFFICIAL_MAX_RETRIES` | 微博官方热榜页失败后的最大尝试次数 | `2` |
 | `SCHEDULE_MINUTES` | 自动更新间隔，单位分钟 | `30` |
+| `APP_TIME_ZONE` | 后端日志、数据时间和页面展示使用的时区 | `Asia/Shanghai` |
 | `MAX_TOPICS_PER_RUN` | 单次最多处理热点数 | `10` |
 | `NOTIFY_CHANNELS` | 启用的通知渠道 | `wecom,telegram` |
 | `LOG_LEVEL` | 日志等级 | `INFO` |

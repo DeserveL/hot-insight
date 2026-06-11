@@ -9,7 +9,7 @@ from uuid import uuid4
 import requests
 
 from backend.app.core.config import AppConfig
-from backend.app.core.logging import logging_run, redact_sensitive_text
+from backend.app.core.logging import logging_run, mask_external_target, redact_sensitive_text
 from backend.app.db.repositories import AppRepository
 from backend.app.domain.models import AIDetail, TopicCandidate, WEIBO_CHANNEL_ID, now_iso
 from backend.app.services.ai.detail_client import AIDetailClient
@@ -212,7 +212,7 @@ def _run_once_inner(
             "准备逐条推送新增热点: limited=%s total_pending=%s targets=%s",
             len(limited_topics),
             len(new_topics),
-            ",".join(f"{provider}:{target}" for provider, target in targets),
+            _format_delivery_targets(targets),
         )
         sent_count = 0
         for topic in limited_topics:
@@ -222,7 +222,7 @@ def _run_once_inner(
                 topic.title,
                 topic.tag,
                 topic.rank,
-                ",".join(f"{provider}:{target}" for provider, target in pending_by_topic[topic.id]),
+                _format_delivery_targets(pending_by_topic[topic.id]),
             )
             ai_detail, ai_error = _load_cached_ai_detail_for_notification(repository, topic)
             results = notifier.send_topic(
@@ -558,3 +558,7 @@ def _format_counter(counter: Counter[str]) -> str:
     if not counter:
         return "无"
     return ",".join(f"{key}:{value}" for key, value in sorted(counter.items()))
+
+
+def _format_delivery_targets(targets: list[tuple[str, str]]) -> str:
+    return ",".join(f"{provider}:{mask_external_target(provider, target)}" for provider, target in targets) or "无"

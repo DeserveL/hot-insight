@@ -1,6 +1,8 @@
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
 
+const SITE_TIME_ZONE = process.env.NEXT_PUBLIC_SITE_TIME_ZONE || "Asia/Shanghai";
+
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
@@ -24,11 +26,36 @@ export function formatDateTime(value: string) {
     return value;
   }
   return new Intl.DateTimeFormat("zh-CN", {
+    timeZone: SITE_TIME_ZONE,
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
   }).format(date);
+}
+
+export function formatDurationBetween(startValue: string, endValue: string) {
+  const start = new Date(startValue);
+  const end = new Date(endValue || startValue);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+    return "-";
+  }
+
+  const durationMinutes = Math.max(0, Math.round((end.getTime() - start.getTime()) / 60000));
+  if (durationMinutes < 1) {
+    return "刚刚上榜";
+  }
+  if (durationMinutes < 60) {
+    return `约 ${durationMinutes} 分钟`;
+  }
+
+  const durationHours = Math.round(durationMinutes / 60);
+  if (durationHours < 24) {
+    return `约 ${durationHours} 小时`;
+  }
+
+  const durationDays = Math.round(durationHours / 24);
+  return `约 ${durationDays} 天`;
 }
 
 export function sourceLabel(sourceId: string) {
