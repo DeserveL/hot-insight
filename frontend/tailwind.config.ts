@@ -10,19 +10,21 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        surface: "#f5f5f7",
-        ink: "#1d1d1f",
-        muted: "#6e6e73",
-        line: "#d2d2d7",
-        bao: "#ef4444",
-        fei: "#f97316",
-        re: "#f59e0b",
+        surface: "#F5F5F7",
+        ink: "#1D1D1F",
+        muted: "#86868B",
+        line: "#D2D2D7",
+        bao: "#A55A2A",
+        fei: "#9A6A35",
+        re: "#9B7A2F",
       },
       boxShadow: {
-        soft: "0 18px 60px rgba(0, 0, 0, 0.08)",
+        apple: "0 4px 24px rgba(0, 0, 0, 0.04)",
+        "apple-lg": "0 18px 50px rgba(0, 0, 0, 0.08)",
+        soft: "0 4px 24px rgba(0, 0, 0, 0.04)",
       },
       borderRadius: {
-        card: "8px",
+        card: "24px",
       },
     },
   },

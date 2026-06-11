@@ -7,18 +7,18 @@ export const metadata: Metadata = {
 
 export default function AboutPage() {
   return (
-    <main className="mx-auto max-w-5xl px-4 py-12 sm:px-6">
-      <section className="border-b border-zinc-200 pb-8">
-        <div className="text-sm font-semibold text-red-600">关于</div>
-        <h1 className="mt-3 text-balance text-4xl font-semibold tracking-tight text-ink sm:text-5xl">
+    <main className="mx-auto max-w-4xl bg-surface px-5 py-20 sm:px-6 lg:py-24">
+      <section className="mx-auto max-w-3xl text-center">
+        <div className="text-sm font-semibold text-[#9A6A35]">关于</div>
+        <h1 className="mt-5 text-balance text-6xl font-semibold leading-none tracking-tight text-[#1D1D1F] sm:text-7xl">
           关于热点洞察
         </h1>
-        <p className="mt-5 max-w-3xl text-lg leading-8 text-muted">
+        <p className="mt-7 text-xl leading-relaxed text-[#86868B]">
           这里整理公开热点信息，并用 AI 辅助提炼事件脉络、事实要点和阅读风险。
         </p>
       </section>
 
-      <div className="divide-y divide-zinc-200">
+      <div className="mt-16">
         <InfoSection title="数据来源">
           热点内容来自公开可访问的信息来源，页面会展示话题标题、热度、排名和更新时间，帮助读者快速了解正在被关注的事件。
         </InfoSection>
@@ -35,9 +35,9 @@ export default function AboutPage() {
 
 function InfoSection({ title, children }: { title: string; children: string }) {
   return (
-    <section className="grid gap-4 py-8 md:grid-cols-[180px_minmax(0,1fr)]">
-      <h2 className="text-lg font-semibold tracking-tight text-ink">{title}</h2>
-      <p className="text-base leading-8 text-zinc-700">{children}</p>
+    <section className="border-b border-gray-200/50 py-12">
+      <h2 className="text-3xl font-semibold tracking-tight text-[#1D1D1F] sm:text-4xl">{title}</h2>
+      <p className="mt-5 text-lg leading-relaxed text-[#86868B]">{children}</p>
     </section>
   );
 }

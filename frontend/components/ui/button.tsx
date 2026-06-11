@@ -12,10 +12,10 @@ export function ButtonLink({ children, className, variant = "primary", ...props 
   return (
     <Link
       className={cn(
-        "inline-flex h-11 items-center justify-center rounded-md px-5 text-sm font-semibold transition",
+        "inline-flex h-11 items-center justify-center rounded-full px-5 text-sm font-semibold transition-all duration-300 ease-out hover:scale-[1.01]",
         variant === "primary"
-          ? "bg-ink text-white shadow-sm hover:bg-black"
-          : "border border-zinc-200 bg-white text-ink shadow-sm hover:border-zinc-400",
+          ? "bg-[#1D1D1F] text-white shadow-apple hover:bg-black hover:shadow-apple-lg"
+          : "bg-white text-[#1D1D1F] shadow-apple hover:shadow-apple-lg",
         className,
       )}
       {...props}
