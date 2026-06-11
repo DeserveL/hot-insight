@@ -240,4 +240,4 @@ docker compose up -d --build
 
 ## License
 
-本项目尚未指定开源许可证。开源发布前请根据实际需求补充 LICENSE 文件。
+本项目基于 MIT License 开源，详见 [LICENSE](./LICENSE)。
