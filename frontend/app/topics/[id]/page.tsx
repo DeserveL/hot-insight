@@ -1,12 +1,12 @@
 import type { Metadata } from "next";
-import type { ReactNode } from "react";
+import { cache, type ReactNode } from "react";
 import { notFound } from "next/navigation";
 import { ArrowLeft, ExternalLink } from "lucide-react";
 
 import { TagBadge } from "@/components/ui/tag-badge";
 import { getPublicSiteUrl, getTopic } from "@/lib/api";
 import type { Topic } from "@/lib/types";
-import { formatDateTime, formatScore, sourceLabel } from "@/lib/utils";
+import { formatDateTime, formatDurationBetween, formatScore, sourceLabel } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
 
@@ -92,7 +92,8 @@ export default async function TopicDetailPage({ params }: { params: Promise<{ id
               <Info name="来源" value={sourceLabel(topic.source_id)} />
               <Info name="更新时间" value={formatDateTime(topic.last_seen_at)} />
               <Info name="首次出现" value={formatDateTime(topic.first_seen_at)} />
-              <Info name="出现次数" value={String(topic.seen_count)} />
+              <Info name="在榜时长" value={formatDurationBetween(topic.first_seen_at, topic.last_seen_at)} />
+              <Info name="监测记录" value={`已记录 ${topic.seen_count} 次`} />
             </div>
             <div className="mt-6 flex flex-col gap-3">
               <a
@@ -213,13 +214,13 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
   );
 }
 
-async function loadTopic(id: string) {
+const loadTopic = cache(async function loadTopic(id: string) {
   try {
     return await getTopic(id);
   } catch {
     return null;
   }
-}
+});
 
 function buildJsonLd(topic: Topic) {
   const image = getAbsoluteWeiboImageProxyUrl(topic.cover_image_url);

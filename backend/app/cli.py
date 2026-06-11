@@ -21,6 +21,7 @@ def main() -> None:
         file_path=config.log_file_path,
         file_max_bytes=config.log_file_max_bytes,
         file_backup_count=config.log_file_backup_count,
+        time_zone=config.app_time_zone,
     )
 
     if args.command == "run-once":

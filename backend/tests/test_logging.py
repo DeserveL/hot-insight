@@ -7,7 +7,8 @@ from pathlib import Path
 import requests
 
 from backend.app.core.config import AIDetailConfig, AppConfig
-from backend.app.core.logging import configure_logging, logging_run, redact_sensitive_text
+from backend.app.core.logging import configure_logging, logging_run, mask_external_target, redact_sensitive_text
+from backend.app.core.timezone import now_iso
 from backend.app.db.repositories import AppRepository
 from backend.app.main import runtime_config_summary
 from backend.app.services.ingestion.service import run_once
@@ -33,8 +34,16 @@ class LoggingTests(unittest.TestCase):
             self.assertTrue(log_path.is_file())
             self.assertIn("run_id=run-test", text)
             self.assertIn("hello logging", text)
+            self.assertIn("+0800", text)
             self.assertGreaterEqual(len(logging.getLogger().handlers), 2)
             _reset_logging()
+
+    def test_now_iso_uses_app_time_zone(self) -> None:
+        self.assertTrue(now_iso("Asia/Shanghai").endswith("+08:00"))
+
+    def test_mask_external_target_hides_channel_ids(self) -> None:
+        self.assertEqual(mask_external_target("wecom", "@all"), "@all")
+        self.assertEqual(mask_external_target("telegram", "-1003920743813"), "-100***3813")
 
     def test_redact_sensitive_text_masks_credentials(self) -> None:
         text = redact_sensitive_text(

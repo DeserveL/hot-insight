@@ -8,6 +8,8 @@ from typing import Any
 
 from dotenv import load_dotenv
 
+from backend.app.core.timezone import DEFAULT_TIME_ZONE, get_app_zoneinfo
+
 
 DEFAULT_TRACK_TAGS = ("爆", "沸", "热")
 DEFAULT_ALERT_TAGS = ("爆", "沸")
@@ -76,6 +78,7 @@ class AppConfig:
     public_site_url: str = ""
     max_topics_per_run: int = 10
     schedule_minutes: int = 30
+    app_time_zone: str = DEFAULT_TIME_ZONE
     fetch_timeout_seconds: int = 15
     weibo_official_timeout_seconds: int = 15
     weibo_official_visitor_timeout_seconds: int = 15
@@ -109,6 +112,7 @@ class AppConfig:
             public_site_url=os.getenv("PUBLIC_SITE_URL", "").strip().rstrip("/"),
             max_topics_per_run=_int_env("MAX_TOPICS_PER_RUN", 10),
             schedule_minutes=_int_env("SCHEDULE_MINUTES", 30),
+            app_time_zone=_time_zone_env("APP_TIME_ZONE", DEFAULT_TIME_ZONE),
             fetch_timeout_seconds=_int_env("FETCH_TIMEOUT_SECONDS", 15),
             weibo_official_timeout_seconds=max(
                 _int_env("WEIBO_OFFICIAL_TIMEOUT_SECONDS", _int_env("FETCH_TIMEOUT_SECONDS", 15)),
@@ -227,6 +231,13 @@ def _int_env(name: str, default: int) -> int:
         return int(value)
     except ValueError as exc:
         raise ValueError(f"{name} must be an integer, got {value!r}") from exc
+
+
+def _time_zone_env(name: str, default: str) -> str:
+    value = os.getenv(name) or os.getenv("TZ") or default
+    value = value.strip() or default
+    get_app_zoneinfo(value)
+    return value
 
 
 def _float_env(name: str, default: float) -> float:

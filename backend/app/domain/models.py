@@ -2,17 +2,18 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, replace
-from datetime import datetime
 from hashlib import sha1
 from typing import Any
 from urllib.parse import quote
+
+from backend.app.core.timezone import now_iso as _now_iso
 
 
 WEIBO_CHANNEL_ID = "weibo"
 
 
 def now_iso() -> str:
-    return datetime.now().astimezone().isoformat(timespec="seconds")
+    return _now_iso()
 
 
 def normalize_title_key(title: str) -> str:
