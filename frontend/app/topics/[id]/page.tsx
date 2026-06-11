@@ -21,6 +21,7 @@ export async function generateMetadata({
     return { title: "热点不存在" };
   }
   const description = topic.ai_detail?.takeaway || topic.ai_detail?.summary || topic.source_excerpt || `${topic.title}，微博热搜 AI 洞察。`;
+  const coverImageUrl = getAbsoluteWeiboImageProxyUrl(topic.cover_image_url);
   return {
     title: topic.title,
     description,
@@ -29,7 +30,7 @@ export async function generateMetadata({
       description,
       url: `${getPublicSiteUrl()}/topics/${topic.id}`,
       type: "article",
-      images: topic.cover_image_url ? [{ url: topic.cover_image_url }] : undefined,
+      images: coverImageUrl ? [{ url: coverImageUrl }] : undefined,
     },
   };
 }
@@ -41,6 +42,7 @@ export default async function TopicDetailPage({ params }: { params: Promise<{ id
     notFound();
   }
   const jsonLd = buildJsonLd(topic);
+  const coverImageUrl = getWeiboImageProxyPath(topic.cover_image_url);
 
   return (
     <main className="mx-auto max-w-7xl px-4 py-10 sm:px-6">
@@ -72,10 +74,10 @@ export default async function TopicDetailPage({ params }: { params: Promise<{ id
             {topic.title}
           </h1>
 
-          {topic.cover_image_url ? (
+          {coverImageUrl ? (
             <div className="mt-8 overflow-hidden rounded-[28px] border border-zinc-200 bg-zinc-100 shadow-sm">
-              {/* eslint-disable-next-line @next/next/no-img-element -- 微博封面域名来自运行数据，不能固定到 Next 图片白名单。 */}
-              <img src={topic.cover_image_url} alt={topic.title} className="aspect-[16/9] w-full object-cover" />
+              {/* eslint-disable-next-line @next/next/no-img-element -- 微博图片走同源代理，避免浏览器直连触发防盗链。 */}
+              <img src={coverImageUrl} alt={topic.title} className="aspect-[16/9] w-full object-cover" />
             </div>
           ) : null}
 
@@ -189,12 +191,15 @@ function AIFallback() {
 }
 
 function SourceMaterialView({ topic }: { topic: Topic }) {
+  const paragraphs = splitSourceExcerpt(topic.source_excerpt);
   return (
     <div className="mt-10 max-w-4xl rounded-[28px] border border-zinc-200 bg-white p-6 shadow-sm">
       <div className="text-sm font-semibold text-zinc-400">微博来源摘要</div>
-      <p className="mt-4 text-base leading-8 text-zinc-700">
-        {topic.source_excerpt || "微博公开来源暂未提供更多摘要，可通过右侧微博来源继续查看。"}
-      </p>
+      <div className="mt-4 space-y-4 text-base leading-8 text-zinc-700">
+        {paragraphs.map((paragraph) => (
+          <p key={paragraph}>{paragraph}</p>
+        ))}
+      </div>
     </div>
   );
 }
@@ -217,6 +222,7 @@ async function loadTopic(id: string) {
 }
 
 function buildJsonLd(topic: Topic) {
+  const image = getAbsoluteWeiboImageProxyUrl(topic.cover_image_url);
   return {
     "@context": "https://schema.org",
     "@type": "Article",
@@ -225,6 +231,80 @@ function buildJsonLd(topic: Topic) {
     dateModified: topic.last_seen_at,
     description: topic.ai_detail?.takeaway || topic.ai_detail?.summary || topic.source_excerpt || topic.title,
     url: `${getPublicSiteUrl()}/topics/${topic.id}`,
-    image: topic.cover_image_url || undefined,
+    image: image || undefined,
   };
+}
+
+function getWeiboImageProxyPath(url: string | null | undefined) {
+  if (!isSinaImgUrl(url)) {
+    return "";
+  }
+  return `/api/weibo-image?url=${encodeURIComponent(url)}`;
+}
+
+function getAbsoluteWeiboImageProxyUrl(url: string | null | undefined) {
+  const path = getWeiboImageProxyPath(url);
+  return path ? `${getPublicSiteUrl()}${path}` : "";
+}
+
+function isSinaImgUrl(value: string | null | undefined): value is string {
+  if (!value) {
+    return false;
+  }
+  try {
+    const url = new URL(value);
+    const hostname = url.hostname.toLowerCase();
+    return url.protocol === "https:" && (hostname === "sinaimg.cn" || hostname.endsWith(".sinaimg.cn"));
+  } catch {
+    return false;
+  }
+}
+
+function splitSourceExcerpt(value: string | null | undefined) {
+  const fallback = "微博公开来源暂未提供更多摘要，可通过微博来源继续查看。";
+  const text = (value || "").replace(/\r\n/g, "\n").trim();
+  if (!text) {
+    return [fallback];
+  }
+
+  const explicitParagraphs = text
+    .split(/\n+/)
+    .map((paragraph) => paragraph.trim())
+    .filter(Boolean);
+  const paragraphs = explicitParagraphs.length > 1 ? explicitParagraphs : splitLongSourceText(text);
+  return Array.from(new Set(paragraphs.map((paragraph) => paragraph.trim()).filter(Boolean))).slice(0, 6);
+}
+
+function splitLongSourceText(text: string) {
+  if (text.length <= 140) {
+    return [text];
+  }
+
+  const sentences = text.match(/[^。！？!?]+[。！？!?]?/g)?.map((sentence) => sentence.trim()).filter(Boolean) || [];
+  if (!sentences.length) {
+    return chunkText(text, 140);
+  }
+
+  const paragraphs: string[] = [];
+  let current = "";
+  for (const sentence of sentences) {
+    if (current && current.length + sentence.length > 150) {
+      paragraphs.push(current);
+      current = sentence;
+      continue;
+    }
+    current = `${current}${sentence}`;
+  }
+  if (current) {
+    paragraphs.push(current);
+  }
+  return paragraphs;
+}
+
+function chunkText(text: string, size: number) {
+  const chunks: string[] = [];
+  for (let index = 0; index < text.length; index += size) {
+    chunks.push(text.slice(index, index + size));
+  }
+  return chunks;
 }
