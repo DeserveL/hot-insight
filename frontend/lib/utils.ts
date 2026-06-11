@@ -67,13 +67,13 @@ export function sourceLabel(sourceId: string) {
 
 export function tagTone(tag: string) {
   if (tag === "爆") {
-    return "border-red-200 bg-red-50 text-red-700";
+    return "bg-[#FFF1E6] text-[#A55A2A]";
   }
   if (tag === "沸") {
-    return "border-orange-200 bg-orange-50 text-orange-700";
+    return "bg-[#F7E8D4] text-[#9A6A35]";
   }
   if (tag === "热") {
-    return "border-amber-200 bg-amber-50 text-amber-700";
+    return "bg-[#F8EDC9] text-[#9B7A2F]";
   }
-  return "border-zinc-200 bg-white text-zinc-600";
+  return "bg-[#ECECF0] text-[#6E6E73]";
 }

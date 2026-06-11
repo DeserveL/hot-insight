@@ -1,10 +1,13 @@
-import { Activity, Sparkles, TrendingUp } from "lucide-react";
+import { ArrowUpRight, Sparkles, TrendingUp } from "lucide-react";
 import Link from "next/link";
 
 import { TopicCard } from "@/components/topic-card";
+import { BentoCard } from "@/components/ui/bento-card";
 import { ButtonLink } from "@/components/ui/button";
+import { TagBadge } from "@/components/ui/tag-badge";
 import { getTopics, getTrendsSummary } from "@/lib/api";
 import type { Topic, TrendsSummary } from "@/lib/types";
+import { formatDateTime, formatScore, sourceLabel } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
 
@@ -13,67 +16,57 @@ export default async function HomePage() {
   const heroTopic = topics[0];
   const restTopics = topics.slice(1, 7);
   const tagCount = summary?.tags?.length ?? 0;
-  const channelCount = summary?.channels?.filter((item) => item.enabled).length ?? 1;
 
   return (
-    <main className="pb-16">
-      <section className="border-b border-zinc-200/80 bg-white">
-        <div className="mx-auto grid max-w-7xl gap-10 px-4 py-12 sm:px-6 lg:grid-cols-[0.95fr_1.05fr] lg:py-16">
-          <div className="flex flex-col justify-between">
-            <div>
-              <div className="mb-7 inline-flex items-center gap-2 rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm font-semibold text-zinc-700">
-                <Sparkles className="h-4 w-4 text-red-500" aria-hidden="true" />
-                AI 辅助热点阅读
-              </div>
-              <h1 className="max-w-3xl text-balance text-5xl font-semibold leading-tight tracking-tight text-ink sm:text-6xl">
-                微博热点洞察
-              </h1>
-              <p className="mt-6 max-w-2xl text-lg leading-8 text-muted">
-                聚合正在升温的话题，整理事件脉络、关键事实与风险提示，让热点阅读更清晰。
-              </p>
-              <div className="mt-8 flex flex-wrap gap-3">
-                <ButtonLink href="/weibo">查看热榜</ButtonLink>
-                <ButtonLink href="/about" variant="secondary">
-                  了解说明
-                </ButtonLink>
-              </div>
-            </div>
-            <div className="mt-12 grid max-w-2xl grid-cols-3 gap-3">
-              <Metric label="累计热点" value={summary?.topic_count ?? 0} />
-              <Metric label="关注标识" value={tagCount} />
-              <Metric label="频道" value={channelCount} />
-            </div>
+    <main className="bg-surface pb-20">
+      <section className="mx-auto max-w-6xl px-5 py-20 sm:px-6 lg:py-24">
+        <div className="max-w-3xl">
+          <div className="mb-8 inline-flex items-center gap-2 rounded-full bg-white px-4 py-2 text-sm font-semibold text-[#6E6E73] shadow-apple">
+            <Sparkles className="h-4 w-4 text-[#A66A2C]" aria-hidden="true" />
+            AI 辅助热点阅读
           </div>
-          <div>
-            <div className="mb-4 flex items-center justify-between gap-4">
-              <div className="flex items-center gap-2 text-sm font-semibold text-zinc-500">
-                <Activity className="h-4 w-4 text-red-500" aria-hidden="true" />
-                当前焦点
-              </div>
-              <Link href="/weibo" className="text-sm font-semibold text-zinc-500 transition hover:text-ink">
-                全部热点
-              </Link>
-            </div>
-            {heroTopic ? <TopicCard topic={heroTopic} priority /> : <EmptyPanel />}
+          <h1 className="text-balance text-6xl font-semibold leading-none tracking-tight text-[#1D1D1F] sm:text-7xl">
+            微博热点洞察
+          </h1>
+          <p className="mt-7 max-w-2xl text-xl leading-relaxed text-[#86868B]">
+            聚合正在升温的话题，整理事件脉络、关键事实与风险提示，让热点阅读更清晰。
+          </p>
+          <div className="mt-9 flex flex-wrap gap-3">
+            <ButtonLink href="/weibo">查看热榜</ButtonLink>
+            <ButtonLink href="/about" variant="secondary">
+              了解说明
+            </ButtonLink>
           </div>
         </div>
       </section>
 
-      <section className="mx-auto max-w-7xl px-4 py-12 sm:px-6">
-        <div className="mb-7 flex items-end justify-between gap-4">
+      <section className="mx-auto max-w-6xl px-5 sm:px-6">
+        <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
+          <div className="md:col-span-2">
+            {heroTopic ? <FocusCard topic={heroTopic} /> : <EmptyPanel />}
+          </div>
+          <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 md:grid-cols-1">
+            <Metric label="累计热点" value={summary?.topic_count ?? 0} />
+            <Metric label="关注标识" value={tagCount} />
+          </div>
+        </div>
+      </section>
+
+      <section className="mx-auto max-w-6xl px-5 py-16 sm:px-6">
+        <div className="mb-8 flex items-end justify-between gap-4">
           <div>
-            <div className="flex items-center gap-2 text-sm font-semibold text-red-600">
+            <div className="flex items-center gap-2 text-sm font-semibold text-[#9A6A35]">
               <TrendingUp className="h-4 w-4" aria-hidden="true" />
               最新洞察
             </div>
-            <h2 className="mt-2 text-3xl font-semibold tracking-tight text-ink">正在升温</h2>
+            <h2 className="mt-3 text-4xl font-semibold tracking-tight text-[#1D1D1F]">正在升温</h2>
           </div>
-          <Link href="/weibo" className="text-sm font-semibold text-muted transition hover:text-ink">
+          <Link href="/weibo" className="text-sm font-semibold text-[#0066CC] transition hover:underline">
             全部热点
           </Link>
         </div>
         {restTopics.length ? (
-          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+          <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
             {restTopics.map((topic) => (
               <TopicCard key={topic.id} topic={topic} />
             ))}
@@ -86,20 +79,55 @@ export default async function HomePage() {
   );
 }
 
+function FocusCard({ topic }: { topic: Topic }) {
+  const summary = topic.ai_detail?.takeaway || topic.ai_detail?.summary || topic.ai_error || "洞察生成中，请稍后查看。";
+  return (
+    <BentoCard interactive className="flex min-h-[440px] flex-col justify-between p-6 sm:p-10">
+      <div>
+        <div className="mb-8 flex flex-wrap items-center justify-between gap-4">
+          <span className="rounded-full bg-[#FFF1E6] px-3 py-1 text-xs font-bold uppercase tracking-wider text-[#A55A2A]">
+            当前焦点
+          </span>
+          <span className="rounded-full bg-[#FFF5E6] px-3 py-1 text-sm font-semibold text-[#A66A2C]">
+            {formatScore(topic.score)} 热度
+          </span>
+        </div>
+        <div className="mb-5 flex items-center gap-3">
+          <TagBadge tag={topic.tag} />
+          <span className="text-sm font-semibold text-[#86868B]">{topic.rank === null ? "未排名" : `#${topic.rank}`}</span>
+        </div>
+        <h2 className="text-balance text-4xl font-semibold leading-tight tracking-tight text-[#1D1D1F] sm:text-5xl">
+          {topic.title}
+        </h2>
+        <p className="mt-6 max-w-2xl text-lg leading-relaxed text-[#86868B]">{summary}</p>
+      </div>
+      <div className="mt-12 flex flex-wrap items-center justify-between gap-4 text-sm font-medium text-[#86868B]">
+        <span>
+          {formatDateTime(topic.last_seen_at)} · {sourceLabel(topic.source_id)}
+        </span>
+        <Link href={`/topics/${topic.id}`} className="inline-flex items-center gap-1 font-semibold text-[#0066CC] hover:underline">
+          查看详情
+          <ArrowUpRight className="h-4 w-4" aria-hidden="true" />
+        </Link>
+      </div>
+    </BentoCard>
+  );
+}
+
 function Metric({ label, value }: { label: string; value: number }) {
   return (
-    <div className="rounded-card border border-zinc-200 bg-white p-4 shadow-sm">
-      <div className="text-2xl font-semibold tracking-tight text-ink">{value}</div>
-      <div className="mt-1 text-sm font-medium text-muted">{label}</div>
-    </div>
+    <BentoCard className="flex min-h-[160px] flex-col justify-center">
+      <div className="text-5xl font-semibold tracking-tight text-[#1D1D1F]">{value}</div>
+      <div className="mt-2 text-sm font-semibold text-[#86868B]">{label}</div>
+    </BentoCard>
   );
 }
 
 function EmptyPanel() {
   return (
-    <div className="rounded-card border border-dashed border-line bg-white p-8 text-center text-muted">
+    <BentoCard className="flex min-h-[220px] items-center justify-center text-center text-[#86868B]">
       暂无热点数据
-    </div>
+    </BentoCard>
   );
 }
 
