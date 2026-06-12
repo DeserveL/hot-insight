@@ -44,6 +44,9 @@ export default async function TopicDetailPage({ params }: { params: Promise<{ id
   }
   const jsonLd = buildJsonLd(topic);
   const coverImageUrl = getWeiboImageProxyPath(topic.cover_image_url);
+  const peakTag = topic.peak_tag || topic.tag;
+  const bestRank = topic.best_rank ?? topic.rank;
+  const peakScore = topic.peak_score ?? topic.score;
 
   return (
     <main className="mx-auto max-w-6xl bg-surface px-5 py-12 sm:px-6 lg:py-16">
@@ -62,12 +65,12 @@ export default async function TopicDetailPage({ params }: { params: Promise<{ id
       <div className="grid gap-10 lg:grid-cols-[minmax(0,1fr)_340px]">
         <article className="min-w-0">
           <div className="flex flex-wrap items-center gap-3">
-            <TagBadge tag={topic.tag} />
+            <TagBadge tag={peakTag} />
             <span className="rounded-full bg-white px-3 py-1 text-sm font-semibold text-[#86868B] shadow-apple">
-              {topic.rank === null ? "未排名" : `排名 #${topic.rank}`}
+              {bestRank === null ? "未排名" : `最高排名 #${bestRank}`}
             </span>
             <span className="rounded-full bg-[#FFF5E6] px-3 py-1 text-sm font-semibold text-[#A66A2C]">
-              热度 {formatScore(topic.score)}
+              峰值热度 {formatScore(peakScore)}
             </span>
           </div>
 
@@ -95,10 +98,12 @@ export default async function TopicDetailPage({ params }: { params: Promise<{ id
             <div className="text-xs font-bold uppercase tracking-widest text-[#A1A1A6]">主题信息</div>
             <div className="mt-6 space-y-5">
               <Info name="来源" value={sourceLabel(topic.source_id)} />
+              <Info name="峰值状态" value={formatPeakStatus(topic)} />
+              <Info name="当前状态" value={formatCurrentStatus(topic)} />
               <Info name="更新时间" value={formatDateTime(topic.last_seen_at)} />
               <Info name="首次出现" value={formatDateTime(topic.first_seen_at)} />
               <Info name="在榜时长" value={formatDurationBetween(topic.first_seen_at, topic.last_seen_at)} />
-              <Info name="监测记录" value={`已记录 ${topic.seen_count} 次`} />
+              <Info name="观测轮次" value={`已观测 ${topic.seen_count} 轮`} />
             </div>
             <div className="mt-8 flex flex-col gap-3">
               <a
@@ -131,6 +136,18 @@ function Info({ name, value }: { name: string; value: string }) {
       <div className="mt-1 break-words text-base font-semibold text-[#1D1D1F]">{value}</div>
     </div>
   );
+}
+
+function formatPeakStatus(topic: Topic) {
+  const tag = topic.peak_tag || topic.tag || "无标识";
+  const rank = topic.best_rank ?? topic.rank;
+  const score = topic.peak_score ?? topic.score;
+  return `${tag} · ${rank === null ? "未排名" : `最高 #${rank}`} · 峰值 ${formatScore(score)}`;
+}
+
+function formatCurrentStatus(topic: Topic) {
+  const tag = topic.tag || "无标识";
+  return `${tag} · ${topic.rank === null ? "未排名" : `当前 #${topic.rank}`} · 当前 ${formatScore(topic.score)}`;
 }
 
 function AIDetailView({ topic }: { topic: Topic }) {

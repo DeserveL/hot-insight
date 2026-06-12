@@ -19,6 +19,7 @@ export type Topic = {
   title: string;
   title_key: string;
   tag: string;
+  peak_tag: string;
   url: string;
   source_excerpt: string;
   cover_image_url: string;
@@ -28,7 +29,9 @@ export type Topic = {
   first_seen_at: string;
   last_seen_at: string;
   rank: number | null;
+  best_rank: number | null;
   score: number | null;
+  peak_score: number | null;
   seen_count: number;
   ai_status: string;
   ai_error: string;

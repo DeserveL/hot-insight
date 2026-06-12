@@ -70,6 +70,9 @@ export default async function HomePage() {
 
 function FocusCard({ topic }: { topic: Topic }) {
   const summary = topic.ai_detail?.takeaway || topic.ai_detail?.summary || topic.ai_error || "洞察生成中，请稍后查看。";
+  const displayTag = topic.peak_tag || topic.tag;
+  const displayRank = topic.best_rank ?? topic.rank;
+  const displayScore = topic.peak_score ?? topic.score;
   return (
     <BentoCard interactive className="flex min-h-[440px] flex-col justify-between p-6 sm:p-10">
       <div>
@@ -78,12 +81,14 @@ function FocusCard({ topic }: { topic: Topic }) {
             当前焦点
           </span>
           <span className="rounded-full bg-[#FFF5E6] px-3 py-1 text-sm font-semibold text-[#A66A2C]">
-            {formatScore(topic.score)} 热度
+            峰值热度 {formatScore(displayScore)}
           </span>
         </div>
         <div className="mb-5 flex items-center gap-3">
-          <TagBadge tag={topic.tag} />
-          <span className="text-sm font-semibold text-[#86868B]">{topic.rank === null ? "未排名" : `#${topic.rank}`}</span>
+          <TagBadge tag={displayTag} />
+          <span className="text-sm font-semibold text-[#86868B]">
+            {displayRank === null ? "未排名" : `最高 #${displayRank}`}
+          </span>
         </div>
         <h2 className="text-balance text-4xl font-semibold leading-tight tracking-tight text-[#1D1D1F] sm:text-5xl">
           {topic.title}
