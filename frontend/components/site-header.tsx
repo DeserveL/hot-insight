@@ -1,4 +1,4 @@
-import { ArrowUpRight, Sparkles } from "lucide-react";
+import { ArrowUpRight, Menu, Sparkles } from "lucide-react";
 import Link from "next/link";
 
 const navItems = [
@@ -28,9 +28,26 @@ export function SiteHeader() {
             </Link>
           ))}
         </nav>
+        <details className="group relative md:hidden">
+          <summary className="flex h-9 w-9 cursor-pointer list-none items-center justify-center rounded-full bg-white text-[#1D1D1F] shadow-apple transition-all duration-300 ease-out hover:scale-[1.01] group-open:bg-[#1D1D1F] group-open:text-white [&::-webkit-details-marker]:hidden">
+            <span className="sr-only">打开导航菜单</span>
+            <Menu className="h-4 w-4" aria-hidden="true" />
+          </summary>
+          <nav className="absolute right-0 mt-3 w-44 overflow-hidden rounded-3xl bg-white/95 p-2 text-sm font-semibold text-[#1D1D1F] shadow-apple-lg backdrop-blur-xl">
+            {navItems.map((item) => (
+              <Link
+                key={item.href}
+                href={item.href}
+                className="block rounded-2xl px-4 py-3 transition-colors duration-300 ease-out hover:bg-[#F5F5F7]"
+              >
+                {item.label}
+              </Link>
+            ))}
+          </nav>
+        </details>
         <Link
           href="/weibo"
-          className="hidden h-9 items-center gap-2 rounded-full bg-[#1D1D1F] px-4 text-sm font-semibold text-white shadow-apple transition-all duration-300 ease-out hover:scale-[1.01] hover:bg-black hover:shadow-apple-lg sm:inline-flex"
+          className="hidden h-9 items-center gap-2 rounded-full bg-[#1D1D1F] px-4 text-sm font-semibold text-white shadow-apple transition-all duration-300 ease-out hover:scale-[1.01] hover:bg-black hover:shadow-apple-lg md:inline-flex"
         >
           热榜
           <ArrowUpRight className="h-4 w-4" aria-hidden="true" />

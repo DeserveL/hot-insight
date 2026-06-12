@@ -1,9 +1,8 @@
-import { ArrowUpRight, Sparkles, TrendingUp } from "lucide-react";
+import { ArrowUpRight, TrendingUp } from "lucide-react";
 import Link from "next/link";
 
 import { TopicCard } from "@/components/topic-card";
 import { BentoCard } from "@/components/ui/bento-card";
-import { ButtonLink } from "@/components/ui/button";
 import { TagBadge } from "@/components/ui/tag-badge";
 import { getTopics, getTrendsSummary } from "@/lib/api";
 import type { Topic, TrendsSummary } from "@/lib/types";
@@ -19,24 +18,14 @@ export default async function HomePage() {
 
   return (
     <main className="bg-surface pb-20">
-      <section className="mx-auto max-w-6xl px-5 py-20 sm:px-6 lg:py-24">
+      <section className="mx-auto max-w-6xl px-5 py-16 sm:px-6 sm:py-20 lg:py-24">
         <div className="max-w-3xl">
-          <div className="mb-8 inline-flex items-center gap-2 rounded-full bg-white px-4 py-2 text-sm font-semibold text-[#6E6E73] shadow-apple">
-            <Sparkles className="h-4 w-4 text-[#A66A2C]" aria-hidden="true" />
-            AI 辅助热点阅读
-          </div>
           <h1 className="text-balance text-6xl font-semibold leading-none tracking-tight text-[#1D1D1F] sm:text-7xl">
             微博热点洞察
           </h1>
           <p className="mt-7 max-w-2xl text-xl leading-relaxed text-[#86868B]">
             聚合正在升温的话题，整理事件脉络、关键事实与风险提示，让热点阅读更清晰。
           </p>
-          <div className="mt-9 flex flex-wrap gap-3">
-            <ButtonLink href="/weibo">查看热榜</ButtonLink>
-            <ButtonLink href="/about" variant="secondary">
-              了解说明
-            </ButtonLink>
-          </div>
         </div>
       </section>
 
