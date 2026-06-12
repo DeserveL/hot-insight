@@ -12,7 +12,13 @@ import requests
 from backend.app.core.config import TelegramConfig
 from backend.app.core.logging import redact_sensitive_text
 from backend.app.domain.models import AIDetail, TopicCandidate, now_iso
-from backend.app.services.notifications.renderers import notification_title, user_visible_ai_error
+from backend.app.services.notifications.renderers import (
+    compact_text,
+    confidence_label,
+    notification_meta_line,
+    notification_title,
+    user_visible_ai_error,
+)
 from backend.app.services.notifications.wecom import format_score
 
 logger = logging.getLogger(__name__)
@@ -178,27 +184,31 @@ def render_telegram_caption(
     ai_detail: AIDetail | None = None,
     ai_error: str = "",
 ) -> str:
-    tag = f"#{html.escape(topic.tag)}" if topic.tag else "#热点"
-    rank = f"#{topic.rank}" if topic.rank is not None else "-"
     lines = [
         f"<b>{html.escape(notification_title(topic))}</b>",
         "",
-        f"{tag}  排名：{html.escape(rank)}  热度：{html.escape(format_score(topic.score))}",
-        f"来源：{html.escape(topic.source_id)}",
+        html.escape(notification_meta_line(topic, format_score(topic.score))),
     ]
     if ai_detail is not None:
+        takeaway = compact_text(ai_detail.takeaway or "值得继续关注该热点后续进展。", 120)
+        summary = compact_text(ai_detail.summary or "未能确认", 180)
+        risk_note = compact_text(ai_detail.risk_note or "相关信息仍需以后续公开说明为准。", 120)
         lines.extend(
             [
                 "",
-                "<b>AI 摘要</b>",
-                html.escape(ai_detail.takeaway or ai_detail.summary),
+                "<b>一句话结论</b>",
+                html.escape(takeaway),
+                "",
+                "<b>热点梳理</b>",
+                html.escape(summary),
                 "",
                 "<b>风险提示</b>",
-                html.escape(ai_detail.risk_note or "相关信息仍需以后续公开说明为准。"),
+                html.escape(risk_note),
+                f"核验程度：{html.escape(confidence_label(ai_detail.confidence))}",
             ]
         )
     else:
-        lines.extend(["", f"AI 洞察：{html.escape(user_visible_ai_error(ai_error))}"])
+        lines.extend(["", html.escape(user_visible_ai_error(ai_error))])
     return _truncate("\n".join(lines), TELEGRAM_CAPTION_LIMIT)
 
 

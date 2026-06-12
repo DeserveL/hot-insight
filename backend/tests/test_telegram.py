@@ -39,14 +39,14 @@ class FakeTelegramSession:
 
 
 class TelegramTests(unittest.TestCase):
-    def test_caption_escapes_html_and_contains_ai_summary(self) -> None:
+    def test_caption_escapes_html_and_contains_summary_sections(self) -> None:
         caption = render_telegram_caption(
-            _topic("<爆点>", "爆"),
+            _topic("<爆点>", "爆", source_id="weibo_official"),
             AIDetail(
                 summary="摘要 <x>",
                 takeaway="一句话 <x>",
-                facts=[],
-                commentary="评价",
+                facts=["事实不应进入 TG"],
+                commentary="评价不应进入 TG",
                 risk_note="风险",
                 sources=[],
                 confidence="medium",
@@ -54,8 +54,40 @@ class TelegramTests(unittest.TestCase):
         )
 
         self.assertIn("💥【爆】&lt;爆点&gt;", caption)
-        self.assertIn("AI 摘要", caption)
+        self.assertIn("微博官方热搜 · 排名 #1 · 热度 12.0万", caption)
+        self.assertIn("一句话结论", caption)
         self.assertIn("一句话 &lt;x&gt;", caption)
+        self.assertIn("热点梳理", caption)
+        self.assertIn("摘要 &lt;x&gt;", caption)
+        self.assertIn("风险提示", caption)
+        self.assertIn("核验程度：中", caption)
+        self.assertNotIn("AI 摘要", caption)
+        self.assertNotIn("关键事实", caption)
+        self.assertNotIn("事实不应进入 TG", caption)
+        self.assertNotIn("AI 评价", caption)
+        self.assertNotIn("评价不应进入 TG", caption)
+        self.assertNotIn("参考来源", caption)
+        self.assertNotIn("weibo_official", caption)
+
+    def test_caption_truncates_long_summary_and_risk_but_keeps_sections(self) -> None:
+        caption = render_telegram_caption(
+            _topic("长文本热点", "热", source_id="weibo_official"),
+            AIDetail(
+                summary="梳理" * 120,
+                takeaway="结论" * 80,
+                facts=[],
+                commentary="评价",
+                risk_note="风险" * 80,
+                sources=[],
+                confidence="low",
+            ),
+        )
+
+        self.assertLessEqual(len(caption), 1024)
+        self.assertIn("一句话结论", caption)
+        self.assertIn("热点梳理", caption)
+        self.assertIn("风险提示", caption)
+        self.assertIn("核验程度：低", caption)
 
     def test_reply_markup_contains_detail_and_weibo_buttons(self) -> None:
         markup = build_reply_markup("https://site.test/topics/a", "https://s.weibo.com/weibo?q=a")
@@ -169,14 +201,14 @@ def _config(max_retries: int = 3) -> TelegramConfig:
     )
 
 
-def _topic(title: str, tag: str, cover_image_url: str = "") -> TopicCandidate:
+def _topic(title: str, tag: str, cover_image_url: str = "", *, source_id: str = "test") -> TopicCandidate:
     return TopicCandidate(
         title=title,
         rank=1,
         score=120000,
         tag=tag,
         url="https://s.weibo.com/weibo?q=test",
-        source_id="test",
+        source_id=source_id,
         fetched_at="2026-06-09T18:00:00+08:00",
         cover_image_url=cover_image_url,
     )

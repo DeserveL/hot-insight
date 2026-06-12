@@ -64,11 +64,11 @@ class NotifierTests(unittest.TestCase):
         self.assertEqual(article["title"], "💥【爆】爆点新闻")
         self.assertEqual(article["thumb_media_id"], "media-1")
         self.assertEqual(article["content_source_url"], topic.url)
-        self.assertIn("洞察暂未生成", article["content"])
-        self.assertIn("热度", article["digest"])
+        self.assertIn("热点来源 · 排名 #1 · 热度 12.0万", article["content"])
+        self.assertEqual(article["digest"], "洞察生成中，可先查看微博来源。")
 
     def test_mpnews_content_renders_ai_detail(self) -> None:
-        topic = _topic("爆点新闻", "爆")
+        topic = _topic("爆点新闻", "爆", source_id="weibo_official", source_excerpt="微博来源摘要内容。")
         detail = AIDetail(
             summary="这是原热搜内容梳理。",
             takeaway="一句话结论。",
@@ -79,13 +79,44 @@ class NotifierTests(unittest.TestCase):
             confidence="medium",
         )
         payload = build_mpnews_payload(topic, _config(Path("cover.png")), "media-1", detail)
-        content = payload["mpnews"]["articles"][0]["content"]
+        article = payload["mpnews"]["articles"][0]
+        content = article["content"]
 
+        self.assertEqual(article["digest"], "一句话结论。")
+        self.assertIn("微博官方热搜 · 排名 #1 · 热度 12.0万", content)
+        self.assertIn("微博来源摘要", content)
+        self.assertIn("微博来源摘要内容。", content)
+        self.assertIn("一句话结论", content)
         self.assertIn("这是原热搜内容梳理。", content)
         self.assertIn("一句话结论。", content)
         self.assertIn("事实一", content)
         self.assertIn("AI 评价内容。", content)
+        self.assertIn("核验程度：中", content)
         self.assertIn("https://example.com/a", content)
+        self.assertNotIn("weibo_official", content)
+        self.assertNotIn("抓取时间", content)
+        self.assertNotIn("可信度：medium", content)
+
+    def test_mpnews_content_limits_reference_sources(self) -> None:
+        topic = _topic("爆点新闻", "爆", source_id="weibo_official")
+        detail = AIDetail(
+            summary="热点梳理。",
+            takeaway="一句话结论。",
+            facts=[],
+            commentary="评价。",
+            risk_note="风险。",
+            sources=[
+                AIDetailSource(title=f"来源{i}", url=f"https://example.com/{i}")
+                for i in range(1, 5)
+            ],
+            confidence="low",
+        )
+        payload = build_mpnews_payload(topic, _config(Path("cover.png")), "media-1", detail)
+        content = payload["mpnews"]["articles"][0]["content"]
+
+        self.assertIn("https://example.com/1", content)
+        self.assertIn("https://example.com/3", content)
+        self.assertNotIn("https://example.com/4", content)
 
     def test_uploads_official_cover_url_and_caches_media_id(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -151,15 +182,23 @@ def _config(cover: Path) -> WeComConfig:
     )
 
 
-def _topic(title: str, tag: str, cover_image_url: str = "") -> TopicCandidate:
+def _topic(
+    title: str,
+    tag: str,
+    cover_image_url: str = "",
+    *,
+    source_id: str = "test",
+    source_excerpt: str = "",
+) -> TopicCandidate:
     return TopicCandidate(
         title=title,
         rank=1,
         score=120000,
         tag=tag,
         url="https://s.weibo.com/weibo?q=test",
-        source_id="test",
+        source_id=source_id,
         fetched_at="2026-06-09T18:00:00+08:00",
+        source_excerpt=source_excerpt,
         cover_image_url=cover_image_url,
     )
 
