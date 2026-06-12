@@ -11,7 +11,7 @@ import requests
 
 from backend.app.core.config import TelegramConfig
 from backend.app.core.logging import redact_sensitive_text
-from backend.app.domain.models import AIDetail, TopicCandidate, now_iso
+from backend.app.domain.models import AIDetail, TopicCandidate
 from backend.app.services.notifications.renderers import (
     compact_text,
     confidence_label,
@@ -99,18 +99,6 @@ class TelegramNotifier:
         if result.ok and result.media_file_id and self.asset_store is not None:
             self.asset_store.set_integration_asset("telegram", file_cache_key(topic.cover_image_url), result.media_file_id)
         return result
-
-    def send_health_alert(self, message: str) -> TelegramSendResult:
-        if not self.enabled:
-            return TelegramSendResult(False, "Telegram 未配置")
-        text = f"<b>热点洞察通知异常</b>\n\n时间：{html.escape(now_iso())}\n{html.escape(message)}"
-        payload = {
-            "chat_id": self.config.chat_id,
-            "text": _truncate(text, 4096),
-            "parse_mode": self.config.parse_mode,
-            "disable_web_page_preview": True,
-        }
-        return self._post_json("sendMessage", payload)
 
     def _send_photo_by_file_id(
         self,

@@ -78,10 +78,6 @@ class WeComNotifier:
             )
         return self.send_mpnews_topic(topic, alert_tags, ai_detail, ai_error, detail_url)
 
-    def send_health_alert(self, message: str) -> bool:
-        content = f"**热点洞察通知异常**\n\n> 时间：{now_iso()}\n> {message}"
-        return self.send_markdown("热点洞察通知异常", content)
-
     def send_mpnews_topic(
         self,
         topic: TopicCandidate,

@@ -11,6 +11,7 @@ hot-insight 是一个个人热点洞察站，用于追踪微博热搜，结合 A
 - AI 辅助洞察：为热点生成一句话结论、内容梳理、关键事实、AI 评价、风险提示和参考来源。
 - 网站详情页：每个热点都有独立详情页，便于阅读和分享。
 - 多渠道通知：支持企业微信应用消息和 Telegram 频道推送。
+- 维护告警：支持通过企业微信群机器人接收采集异常提醒。
 - 响应式界面：面向桌面端和移动端优化阅读体验。
 - Docker 部署：提供 `docker compose` 部署方式，适合个人服务器运行。
 
@@ -113,6 +114,7 @@ http://localhost:3000
 | `NOTIFY_CHANNELS` | 启用的通知渠道 | `wecom,telegram` |
 | `LOG_LEVEL` | 日志等级 | `INFO` |
 | `LOG_FILE_PATH` | 日志文件路径 | `data/logs/hot-insight.log` |
+| `HEALTH_ALERT_COOLDOWN_MINUTES` | 采集异常维护告警冷却时间，单位分钟 | `180` |
 | `NOTIFICATION_DEFAULT_COVER` | 默认通知封面图片路径 | `backend/app/assets/notification-covers/default-cover.png` |
 
 ### 企业微信
@@ -125,9 +127,14 @@ WECOM_TO_USER=@all
 WECOM_MESSAGE_TYPE=mpnews
 WECOM_DEFAULT_COVER_NAME=hot.jpeg
 WECOM_DEFAULT_COVER_MEDIA_ID=
+WECOM_HEALTH_ALERTS=true
+WECOM_HEALTH_WEBHOOK_URL=
+WECOM_HEALTH_WEBHOOK_TIMEOUT_SECONDS=10
 ```
 
 企业微信图文消息会优先使用微博官方详情页的封面图。没有可用封面时，会尝试使用企业微信素材库中名为 `hot.jpeg` 的图片；如果你已经知道素材 `media_id`，也可以直接填写 `WECOM_DEFAULT_COVER_MEDIA_ID`。
+
+维护告警使用独立的企业微信群机器人 Webhook，只在整轮采集所有数据源都不可用时发送。`WECOM_HEALTH_WEBHOOK_URL` 应填写企业微信机器人完整地址，请勿提交到公开仓库；未配置时异常只写入日志。
 
 ### Telegram
 

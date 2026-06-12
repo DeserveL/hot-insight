@@ -26,6 +26,8 @@ class WeComConfig:
     to_user: str = "@all"
     origin: str = "https://qyapi.weixin.qq.com"
     health_alerts: bool = True
+    health_webhook_url: str = ""
+    health_webhook_timeout_seconds: int = 10
     message_type: str = "mpnews"
     mpnews_author: str = "热点洞察"
     default_cover: Path = DEFAULT_NOTIFICATION_COVER
@@ -155,6 +157,8 @@ def _load_wecom_config() -> WeComConfig:
         to_user=os.getenv("WECOM_TO_USER", "@all"),
         origin=os.getenv("WECOM_ORIGIN", "https://qyapi.weixin.qq.com").rstrip("/"),
         health_alerts=_bool_env("WECOM_HEALTH_ALERTS", True),
+        health_webhook_url=os.getenv("WECOM_HEALTH_WEBHOOK_URL", "").strip(),
+        health_webhook_timeout_seconds=max(_int_env("WECOM_HEALTH_WEBHOOK_TIMEOUT_SECONDS", 10), 1),
         message_type=(os.getenv("WECOM_MESSAGE_TYPE") or "mpnews").strip().lower(),
         mpnews_author=os.getenv("WECOM_MPNEWS_AUTHOR", "热点洞察"),
         default_cover=Path(os.getenv("NOTIFICATION_DEFAULT_COVER", str(DEFAULT_NOTIFICATION_COVER))),
