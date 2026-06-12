@@ -120,6 +120,8 @@ def runtime_config_summary(config: AppConfig, scheduler_enabled: bool) -> dict[s
         "alert_tags": list(config.alert_tags),
         "notify_channels": list(config.notify_channels),
         "wecom_enabled": config.wecom.enabled,
+        "wecom_health_alerts": config.wecom.health_alerts,
+        "wecom_health_webhook_configured": bool(config.wecom.health_webhook_url),
         "telegram_enabled": config.telegram.enabled,
         "ai_detail_enabled": config.ai_detail.enabled,
         "ai_detail_available": config.ai_detail.available,

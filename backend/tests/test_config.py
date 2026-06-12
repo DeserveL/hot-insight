@@ -117,6 +117,28 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.wecom.message_type, "mpnews")
         self.assertEqual(config.wecom.default_cover, DEFAULT_NOTIFICATION_COVER)
         self.assertEqual(config.wecom.default_cover_name, "hot.jpeg")
+        self.assertTrue(config.wecom.health_alerts)
+        self.assertEqual(config.wecom.health_webhook_url, "")
+        self.assertEqual(config.wecom.health_webhook_timeout_seconds, 10)
+
+    def test_wecom_health_webhook_is_configurable(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "WECOM_HEALTH_ALERTS": "true",
+                "WECOM_HEALTH_WEBHOOK_URL": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test-key",
+                "WECOM_HEALTH_WEBHOOK_TIMEOUT_SECONDS": "6",
+            },
+            clear=True,
+        ):
+            config = AppConfig.from_env(env_file=None)
+
+        self.assertTrue(config.wecom.health_alerts)
+        self.assertEqual(
+            config.wecom.health_webhook_url,
+            "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test-key",
+        )
+        self.assertEqual(config.wecom.health_webhook_timeout_seconds, 6)
 
     def test_ai_detail_defaults(self) -> None:
         with patch.dict(os.environ, {}, clear=True):

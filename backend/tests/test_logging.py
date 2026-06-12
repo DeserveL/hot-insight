@@ -6,7 +6,7 @@ from pathlib import Path
 
 import requests
 
-from backend.app.core.config import AIDetailConfig, AppConfig
+from backend.app.core.config import AIDetailConfig, AppConfig, WeComConfig
 from backend.app.core.logging import configure_logging, logging_run, mask_external_target, redact_sensitive_text
 from backend.app.core.timezone import now_iso
 from backend.app.db.repositories import AppRepository
@@ -48,6 +48,7 @@ class LoggingTests(unittest.TestCase):
     def test_redact_sensitive_text_masks_credentials(self) -> None:
         text = redact_sensitive_text(
             "https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token=secret-token "
+            "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=webhook-key "
             "https://api.telegram.org/bot123456:ABC/sendPhoto "
             "https://login.sina.com.cn/visitor/visitor?a=crossdomain&s=sub-value&sp=subp-value "
             "Authorization: Bearer ai-key Cookie: SUB=abc "
@@ -55,28 +56,25 @@ class LoggingTests(unittest.TestCase):
 
         self.assertNotIn("secret-token", text)
         self.assertNotIn("123456:ABC", text)
+        self.assertNotIn("webhook-key", text)
         self.assertNotIn("ai-key", text)
         self.assertNotIn("SUB=abc", text)
         self.assertNotIn("sub-value", text)
         self.assertNotIn("subp-value", text)
         self.assertIn("access_token=***", text)
+        self.assertIn("key=***", text)
         self.assertIn("s=***", text)
         self.assertIn("sp=***", text)
         self.assertIn("/bot***/", text)
 
     def test_runtime_config_summary_excludes_secret_values(self) -> None:
         config = AppConfig(
-            wecom=type(
-                "WeCom",
-                (),
-                {
-                    "enabled": True,
-                    "corp_id": "corp",
-                    "corp_secret": "secret",
-                    "agent_id": "agent",
-                    "to_user": "@all",
-                },
-            )(),
+            wecom=WeComConfig(
+                corp_id="corp",
+                corp_secret="secret",
+                agent_id="agent",
+                health_webhook_url="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=webhook-key",
+            ),
             telegram=type("Telegram", (), {"enabled": True, "bot_token": "token", "chat_id": "@channel"})(),
             ai_detail=AIDetailConfig(enabled=True, api_key="ai-key", model="model"),
         )
@@ -86,6 +84,8 @@ class LoggingTests(unittest.TestCase):
         self.assertNotIn("secret", summary_text.lower())
         self.assertNotIn("token", summary_text.lower())
         self.assertNotIn("ai-key", summary_text)
+        self.assertNotIn("webhook-key", summary_text)
+        self.assertIn("wecom_health_webhook_configured", summary_text)
         self.assertIn("ai_detail_available", summary_text)
 
     def test_run_once_logs_key_flow_with_same_run_id(self) -> None:
@@ -161,9 +161,6 @@ class FakeNotifier:
         targets: list[tuple[str, str]] | None = None,
     ) -> list[DeliveryResult]:
         return [DeliveryResult("test", "target", True, "", "msg-1")]
-
-    def send_health_alert(self, message: str) -> bool:
-        return True
 
 
 class FakeAIDetailClient:

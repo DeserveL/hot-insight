@@ -25,11 +25,20 @@ class FakeResponse:
 
 
 class FakeSession:
-    def __init__(self, responses: list[object]) -> None:
+    def __init__(self, responses: list[object], post_responses: list[object] | None = None) -> None:
         self.responses = responses
+        self.post_responses = post_responses or []
+        self.posts: list[dict] = []
 
     def get(self, *args, **kwargs):
         response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+    def post(self, url, json=None, timeout=None, **kwargs):
+        self.posts.append({"url": url, "json": json, "timeout": timeout})
+        response = self.post_responses.pop(0) if self.post_responses else FakeResponse({"errcode": 0, "errmsg": "ok"})
         if isinstance(response, Exception):
             raise response
         return response
@@ -61,10 +70,6 @@ class FakeNotifier:
                 self.sent_topics.append(topic)
             results.append(DeliveryResult(provider, target, ok, "" if ok else "failed", "msg-1" if ok else ""))
         return results
-
-    def send_health_alert(self, message: str) -> bool:
-        self.health_messages.append(message)
-        return True
 
 
 class FakeAIDetailClient:
@@ -171,21 +176,166 @@ class ServiceTests(unittest.TestCase):
 
     def test_untagged_source_does_not_trigger_business_delivery(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            config = _config(temp_dir, source_order=("nsuuu",), health_alert_cooldown_minutes=0)
+            config = _config(
+                temp_dir,
+                source_order=("nsuuu",),
+                health_alert_cooldown_minutes=0,
+                health_webhook_url="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test-key",
+            )
             repository = AppRepository(config.database_path)
             notifier = FakeNotifier()
+            session = FakeSession([_untagged_response()])
 
             result = run_once(
                 config,
-                session=FakeSession([_untagged_response()]),
+                session=session,
                 repository=repository,
                 notifier=notifier,
                 ai_client=FakeAIDetailClient(),
             )
 
             self.assertEqual(result.sent_count, 0)
+            self.assertFalse(result.health_alert_sent)
             self.assertEqual(notifier.sent_topics, [])
-            self.assertEqual(len(notifier.health_messages), 1)
+            self.assertEqual(notifier.health_messages, [])
+            self.assertEqual(session.posts, [])
+            repository.close()
+
+    def test_all_sources_failure_sends_wecom_robot_health_alert_only(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = _config(
+                temp_dir,
+                source_order=("xunjinlu",),
+                health_alert_cooldown_minutes=0,
+                health_webhook_url="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test-key",
+            )
+            repository = AppRepository(config.database_path)
+            notifier = FakeNotifier()
+            session = FakeSession([requests.ConnectionError("Temporary failure in name resolution")])
+
+            result = run_once(
+                config,
+                session=session,
+                repository=repository,
+                notifier=notifier,
+                ai_client=FakeAIDetailClient(),
+            )
+
+            self.assertTrue(result.health_alert_sent)
+            self.assertEqual(notifier.sent_topics, [])
+            self.assertEqual(notifier.health_messages, [])
+            self.assertEqual(len(session.posts), 1)
+            self.assertEqual(session.posts[0]["json"]["msgtype"], "markdown")
+            self.assertIn("热点洞察采集异常", session.posts[0]["json"]["markdown"]["content"])
+            self.assertIn("DNS 解析失败", session.posts[0]["json"]["markdown"]["content"])
+            repository.close()
+
+    def test_all_sources_failure_without_webhook_only_logs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = _config(temp_dir, source_order=("xunjinlu",), health_alert_cooldown_minutes=0)
+            repository = AppRepository(config.database_path)
+            notifier = FakeNotifier()
+            session = FakeSession([requests.ConnectionError("Temporary failure in name resolution")])
+
+            result = run_once(
+                config,
+                session=session,
+                repository=repository,
+                notifier=notifier,
+                ai_client=FakeAIDetailClient(),
+            )
+
+            self.assertFalse(result.health_alert_sent)
+            self.assertEqual(notifier.health_messages, [])
+            self.assertEqual(session.posts, [])
+            repository.close()
+
+    def test_health_alert_respects_cooldown(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = _config(
+                temp_dir,
+                source_order=("xunjinlu",),
+                health_webhook_url="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test-key",
+            )
+            repository = AppRepository(config.database_path)
+            notifier = FakeNotifier()
+            session = FakeSession(
+                [
+                    requests.ConnectionError("Temporary failure in name resolution"),
+                    requests.ConnectionError("Temporary failure in name resolution"),
+                ]
+            )
+
+            first = run_once(
+                config,
+                session=session,
+                repository=repository,
+                notifier=notifier,
+                ai_client=FakeAIDetailClient(),
+            )
+            second = run_once(
+                config,
+                session=session,
+                repository=repository,
+                notifier=notifier,
+                ai_client=FakeAIDetailClient(),
+            )
+
+            self.assertTrue(first.health_alert_sent)
+            self.assertFalse(second.health_alert_sent)
+            self.assertEqual(len(session.posts), 1)
+            repository.close()
+
+    def test_health_alert_webhook_failure_does_not_block_run(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = _config(
+                temp_dir,
+                source_order=("xunjinlu",),
+                health_alert_cooldown_minutes=0,
+                health_webhook_url="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test-key",
+            )
+            repository = AppRepository(config.database_path)
+            notifier = FakeNotifier()
+            session = FakeSession(
+                [requests.ConnectionError("Temporary failure in name resolution")],
+                post_responses=[FakeResponse({"errcode": 93000, "errmsg": "invalid webhook"})],
+            )
+
+            result = run_once(
+                config,
+                session=session,
+                repository=repository,
+                notifier=notifier,
+                ai_client=FakeAIDetailClient(),
+            )
+
+            self.assertFalse(result.health_alert_sent)
+            self.assertEqual(len(session.posts), 1)
+            self.assertEqual(notifier.health_messages, [])
+            repository.close()
+
+    def test_health_alert_disabled_skips_wecom_robot(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = _config(
+                temp_dir,
+                source_order=("xunjinlu",),
+                health_alert_cooldown_minutes=0,
+                health_alerts=False,
+                health_webhook_url="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test-key",
+            )
+            repository = AppRepository(config.database_path)
+            session = FakeSession([requests.ConnectionError("Temporary failure in name resolution")])
+
+            result = run_once(
+                config,
+                session=session,
+                repository=repository,
+                notifier=FakeNotifier(),
+                ai_client=FakeAIDetailClient(),
+            )
+
+            self.assertFalse(result.health_alert_sent)
+            self.assertEqual(session.posts, [])
             repository.close()
 
     def test_tracked_hot_topic_is_stored_but_not_pushed_when_alert_tags_exclude_it(self) -> None:
@@ -348,6 +498,8 @@ def _config(
     source_order: tuple[str, ...] = ("xunjinlu",),
     tag_recurrence_hours: dict[str, int] | None = None,
     health_alert_cooldown_minutes: int = 180,
+    health_alerts: bool = True,
+    health_webhook_url: str = "",
 ) -> AppConfig:
     return AppConfig(
         alert_tags=alert_tags,
@@ -356,7 +508,7 @@ def _config(
         weibo_source_order=source_order,
         database_path=Path(temp_dir) / "hot_insight.sqlite3",
         ai_detail=AIDetailConfig(enabled=True, model="test-model"),
-        wecom=WeComConfig(health_alerts=True),
+        wecom=WeComConfig(health_alerts=health_alerts, health_webhook_url=health_webhook_url),
         health_alert_cooldown_minutes=health_alert_cooldown_minutes,
     )
 

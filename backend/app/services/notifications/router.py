@@ -82,10 +82,6 @@ class WeComNotificationProvider:
         ok = self.notifier.send_topic(topic, alert_tags, ai_detail, ai_error, detail_url)
         return DeliveryResult(self.provider, self.target, ok, "" if ok else "企业微信推送失败")
 
-    def send_health_alert(self, message: str) -> DeliveryResult:
-        ok = self.notifier.send_health_alert(message)
-        return DeliveryResult(self.provider, self.target, ok, "" if ok else "企业微信健康告警推送失败")
-
 
 class TelegramNotificationProvider:
     provider = "telegram"
@@ -116,16 +112,6 @@ class TelegramNotificationProvider:
             ai_error,
             detail_url,
         )
-        return DeliveryResult(
-            self.provider,
-            self.target,
-            result.ok,
-            result.error_message,
-            result.external_message_id,
-        )
-
-    def send_health_alert(self, message: str) -> DeliveryResult:
-        result = self.notifier.send_health_alert(message)
         return DeliveryResult(
             self.provider,
             self.target,
@@ -203,39 +189,6 @@ class NotificationRouter:
                 )
                 results.append(DeliveryResult(provider.provider, provider.target, False, error_message, ""))
         return results
-
-    def send_health_alert(self, message: str) -> bool:
-        sent = False
-        for provider in self.providers:
-            send_health = getattr(provider, "send_health_alert", None)
-            if send_health is None:
-                continue
-            try:
-                raw_result = send_health(message)
-                result = DeliveryResult(
-                    raw_result.provider,
-                    raw_result.target,
-                    raw_result.success,
-                    redact_sensitive_text(raw_result.error_message),
-                    raw_result.external_message_id,
-                )
-                sent = sent or bool(result.success)
-                logger.info(
-                    "健康告警通知完成: provider=%s target=%s success=%s external_message_id=%s error=%s",
-                    result.provider,
-                    mask_external_target(result.provider, result.target),
-                    result.success,
-                    result.external_message_id or "-",
-                    result.error_message or "-",
-                )
-            except Exception as exc:
-                logger.error(
-                    "健康告警通知异常: provider=%s target=%s error=%s",
-                    provider.provider,
-                    mask_external_target(provider.provider, provider.target),
-                    redact_sensitive_text(exc),
-                )
-        return sent
 
 
 def build_notification_router(

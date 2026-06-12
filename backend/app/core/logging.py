@@ -97,6 +97,7 @@ def redact_sensitive_text(value: object) -> str:
     replacements = [
         (r"(?i)(access_token=)[^&\s]+", r"\1***"),
         (r"(?i)(corpsecret=)[^&\s]+", r"\1***"),
+        (r"(?i)([?&]key=)[^&\s]+", r"\1***"),
         (r"(?i)([?&](?:s|sp|sub|subp)=)[^&\s]+", r"\1***"),
         (r"(?i)(api[_-]?key[\"'\s:=]+)[^,\"'\s]+", r"\1***"),
         (r"(?i)(authorization[\"'\s:=]+bearer\s+)[^,\"'\s]+", r"\1***"),

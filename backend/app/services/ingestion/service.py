@@ -17,6 +17,7 @@ from backend.app.services.ai.prompts import PROMPT_VERSION
 from backend.app.services.ingestion.weibo_official import fetch_weibo_official_detail_material
 from backend.app.services.ingestion.weibo_sources import SourceError, build_weibo_sources
 from backend.app.services.notifications.router import NotificationRouter, build_notification_router
+from backend.app.services.notifications.wecom_robot import send_wecom_robot_health_alert
 
 logger = logging.getLogger(__name__)
 
@@ -137,7 +138,7 @@ def _run_once_inner(
 
         if not selected_topics:
             health_sent = (
-                _send_health_alert_if_needed(config, repository, notifier, fetch_result.health_message)
+                _send_health_alert_if_needed(config, repository, session, fetch_result.health_message)
                 if fetch_result.health_message
                 else False
             )
@@ -541,6 +542,8 @@ def _fetch_business_topics(
             f" 带标记源状态：{'; '.join(tagged_failures) or '无'}。"
             f" 无标记源：{'; '.join(untagged_successes)}。"
         )
+        logger.warning("%s", health_message)
+        return FetchTopicsResult([], None, "", 0)
     else:
         health_message = (
             "所有带标记数据源不可用或为空，且无标记兜底源也未成功。"
@@ -593,21 +596,30 @@ def _enrich_official_source_material(
 def _send_health_alert_if_needed(
     config: AppConfig,
     repository: AppRepository,
-    notifier: NotificationRouter,
+    session: requests.Session,
     message: str,
 ) -> bool:
     if not config.wecom.health_alerts:
         logger.info("健康告警未启用，跳过发送")
         return False
+    if not config.wecom.health_webhook_url:
+        logger.info("企微机器人健康告警 webhook 未配置，跳过外部发送")
+        return False
     alert_key = "tagged_sources_unavailable_alert"
     if not repository.should_send_health_alert(alert_key, config.health_alert_cooldown_minutes):
         logger.info("健康告警仍在冷却期内，跳过发送")
         return False
-    if notifier.send_health_alert(message):
+    result = send_wecom_robot_health_alert(
+        webhook_url=config.wecom.health_webhook_url,
+        message=message,
+        timeout_seconds=config.wecom.health_webhook_timeout_seconds,
+        session=session,
+    )
+    if result.ok:
         repository.mark_health_alert_sent(alert_key)
-        logger.info("健康告警发送成功")
+        logger.info("企微机器人健康告警发送成功")
         return True
-    logger.warning("健康告警发送失败")
+    logger.warning("企微机器人健康告警发送失败: error=%s", result.error_message or "-")
     return False
 
 
