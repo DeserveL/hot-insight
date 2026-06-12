@@ -123,6 +123,8 @@ def runtime_config_summary(config: AppConfig, scheduler_enabled: bool) -> dict[s
         "telegram_enabled": config.telegram.enabled,
         "ai_detail_enabled": config.ai_detail.enabled,
         "ai_detail_available": config.ai_detail.available,
+        "ai_detail_api_mode": config.ai_detail.api_mode,
+        "ai_detail_model_configured": bool(config.ai_detail.model),
         "log_file_enabled": config.log_file_enabled,
         "log_file_path": str(config.log_file_path),
     }

@@ -123,7 +123,7 @@ class ConfigTests(unittest.TestCase):
             config = AppConfig.from_env(env_file=None)
 
         self.assertTrue(config.ai_detail.enabled)
-        self.assertEqual(config.ai_detail.api_mode, "chat_completions")
+        self.assertEqual(config.ai_detail.api_mode, "responses")
         self.assertEqual(config.ai_detail.max_retries, 3)
         self.assertEqual(config.ai_detail.timeout_seconds, 60)
         self.assertEqual(config.ai_detail.temperature, 0.2)

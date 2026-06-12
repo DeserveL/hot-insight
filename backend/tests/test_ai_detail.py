@@ -10,6 +10,7 @@ from backend.app.domain.models import TopicCandidate
 from backend.app.services.ai.detail_client import (
     AIDetailClient,
     build_user_prompt,
+    parse_responses_detail,
     parse_chat_completion_detail,
     sanitize_ai_detail,
 )
@@ -40,9 +41,27 @@ class FakeSession:
 
 
 class AIDetailTests(unittest.TestCase):
+    def test_responses_request_uses_required_web_search_tool(self) -> None:
+        session = FakeSession([FakeResponse(_responses_payload())])
+        client = AIDetailClient(_config(api_mode="responses"), session=session)
+
+        result = client.generate(_topic())
+
+        self.assertTrue(result.ok)
+        self.assertEqual(session.posts[0]["url"], "https://ai.example.com/v1/responses")
+        self.assertEqual(session.posts[0]["headers"]["Authorization"], "Bearer key")
+        self.assertEqual(session.posts[0]["json"]["model"], "search-model")
+        self.assertEqual(session.posts[0]["json"]["tools"], [{"type": "web_search"}])
+        self.assertEqual(session.posts[0]["json"]["tool_choice"], "required")
+        self.assertEqual(session.posts[0]["json"]["include"], ["web_search_call.action.sources"])
+        self.assertIn("input", session.posts[0]["json"])
+        self.assertEqual(result.search_call_count, 1)
+        self.assertEqual(result.search_source_count, 1)
+        self.assertEqual(result.detail.confidence, "medium")
+
     def test_chat_completions_request_includes_web_search_options(self) -> None:
         session = FakeSession([FakeResponse(_ai_payload())])
-        client = AIDetailClient(_config(web_search_options={}), session=session)
+        client = AIDetailClient(_config(api_mode="chat_completions", web_search_options={}), session=session)
 
         result = client.generate(_topic())
 
@@ -55,7 +74,7 @@ class AIDetailTests(unittest.TestCase):
 
     def test_web_search_options_can_be_disabled(self) -> None:
         session = FakeSession([FakeResponse(_ai_payload())])
-        client = AIDetailClient(_config(web_search_options=None), session=session)
+        client = AIDetailClient(_config(api_mode="chat_completions", web_search_options=None), session=session)
 
         result = client.generate(_topic())
 
@@ -70,7 +89,7 @@ class AIDetailTests(unittest.TestCase):
                 requests.ConnectionError("down"),
             ]
         )
-        client = AIDetailClient(_config(max_retries=3), session=session)
+        client = AIDetailClient(_config(api_mode="chat_completions", max_retries=3), session=session)
 
         result = client.generate(_topic())
 
@@ -100,6 +119,15 @@ class AIDetailTests(unittest.TestCase):
         self.assertEqual(detail.commentary, "评价")
         self.assertEqual(detail.sources[0].url, "https://example.com")
 
+    def test_parse_responses_json_and_search_sources(self) -> None:
+        parsed = parse_responses_detail(_responses_payload())
+
+        self.assertEqual(parsed.detail.summary, "摘要")
+        self.assertEqual(parsed.search_call_count, 1)
+        self.assertEqual(parsed.search_source_count, 1)
+        self.assertEqual(parsed.json_source_count, 1)
+        self.assertEqual([source.url for source in parsed.detail.sources], ["https://s.weibo.com/weibo?q=test", "https://news.example.com/a"])
+
     def test_user_prompt_can_include_official_context(self) -> None:
         prompt = build_user_prompt(_topic(), official_context="微博官方详情页内容")
 
@@ -109,7 +137,7 @@ class AIDetailTests(unittest.TestCase):
     def test_extra_payload_merges_without_overriding_core_fields(self) -> None:
         session = FakeSession([FakeResponse(_ai_payload())])
         client = AIDetailClient(
-            _config(extra_payload={"metadata": {"search": True}, "model": "blocked"}),
+            _config(api_mode="chat_completions", extra_payload={"metadata": {"search": True}, "model": "blocked"}),
             session=session,
         )
 
@@ -137,24 +165,50 @@ class AIDetailTests(unittest.TestCase):
             repository.save_topics([topic, failed_topic])
             detail = parse_chat_completion_detail(_ai_payload())
 
-            repository.save_ai_insight_success(topic, detail, "model-a")
+            repository.save_ai_insight_success(
+                topic,
+                detail,
+                "model-a",
+                prompt_version="prompt-a",
+                api_mode="responses",
+                context_hash="hash-a",
+                search_source_count=2,
+            )
             success = repository.get_ai_insight_record(topic.id)
-            repository.save_ai_insight_failure(failed_topic, "network down", "model-a")
+            repository.save_ai_insight_failure(
+                failed_topic,
+                "network down",
+                "model-a",
+                prompt_version="prompt-a",
+                api_mode="responses",
+                context_hash="hash-b",
+            )
             failure = repository.get_ai_insight_record(failed_topic.id)
 
             self.assertEqual(success["status"], "success")
             self.assertEqual(success["detail"].summary, "摘要")
+            self.assertEqual(success["prompt_version"], "prompt-a")
+            self.assertEqual(success["api_mode"], "responses")
+            self.assertEqual(success["context_hash"], "hash-a")
+            self.assertEqual(success["search_source_count"], 2)
             self.assertEqual(failure["status"], "failed")
+            self.assertEqual(failure["context_hash"], "hash-b")
             self.assertIn("network down", failure["error_message"])
             repository.close()
 
 
-def _config(web_search_options={}, max_retries: int = 3, extra_payload: dict | None = None) -> AIDetailConfig:
+def _config(
+    web_search_options={},
+    max_retries: int = 3,
+    extra_payload: dict | None = None,
+    api_mode: str = "chat_completions",
+) -> AIDetailConfig:
     return AIDetailConfig(
         enabled=True,
         base_url="https://ai.example.com/v1",
         api_key="key",
         model="search-model",
+        api_mode=api_mode,
         max_retries=max_retries,
         timeout_seconds=30,
         temperature=0.2,
@@ -189,6 +243,26 @@ def _ai_payload(risk_note: str = "风险") -> dict:
                 }
             }
         ]
+    }
+
+
+def _responses_payload() -> dict:
+    return {
+        "output_text": (
+            '{"summary":"摘要","facts":["事实"],"commentary":"评价","takeaway":"一句话结论",'
+            '"risk_note":"风险","sources":[{"title":"微博搜索","url":"https://s.weibo.com/weibo?q=test"}],'
+            '"confidence":"low"}'
+        ),
+        "output": [
+            {
+                "type": "web_search_call",
+                "action": {
+                    "sources": [
+                        {"title": "媒体源", "url": "https://news.example.com/a"},
+                    ]
+                },
+            }
+        ],
     }
 
 

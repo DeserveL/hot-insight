@@ -64,6 +64,10 @@ class SchemaTests(unittest.TestCase):
             self.assertIn("cover_image_url", topic_columns)
             ai_columns = {row[1] for row in conn.execute("PRAGMA table_info(ai_insights)")}
             self.assertIn("takeaway", ai_columns)
+            self.assertIn("prompt_version", ai_columns)
+            self.assertIn("api_mode", ai_columns)
+            self.assertIn("context_hash", ai_columns)
+            self.assertIn("search_source_count", ai_columns)
             conn.close()
 
     def test_migrates_legacy_topics_with_tag_specific_recurrence_window(self) -> None:

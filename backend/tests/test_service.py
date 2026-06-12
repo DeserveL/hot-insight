@@ -7,7 +7,9 @@ import requests
 from backend.app.core.config import AIDetailConfig, AppConfig, WeComConfig
 from backend.app.db.repositories import AppRepository
 from backend.app.domain.models import AIDetail, TopicCandidate
-from backend.app.services.ingestion.service import filter_alert_topics, filter_track_topics, run_once
+from backend.app.services.ai.detail_client import AIContext, build_context_hash
+from backend.app.services.ai.prompts import PROMPT_VERSION
+from backend.app.services.ingestion.service import _generate_ai_detail_if_missing, filter_alert_topics, filter_track_topics, run_once
 from backend.app.services.notifications.router import DeliveryResult, DeliveryTarget
 
 
@@ -71,12 +73,22 @@ class FakeAIDetailClient:
         self.detail: AIDetail | None = None
         self.error_message = "fake ai disabled"
 
-    def generate(self, topic: TopicCandidate):
+    def prepare_context(self, topic: TopicCandidate) -> AIContext:
+        official_context = topic.source_excerpt
+        return AIContext(official_context=official_context, context_hash=build_context_hash(topic, official_context))
+
+    def generate(self, topic: TopicCandidate, context: AIContext | None = None):
         self.calls.append(topic)
         return type(
             "Result",
             (),
-            {"ok": self.detail is not None, "detail": self.detail, "error_message": self.error_message},
+            {
+                "ok": self.detail is not None,
+                "detail": self.detail,
+                "error_message": self.error_message,
+                "context_hash": context.context_hash if context else build_context_hash(topic, topic.source_excerpt),
+                "search_source_count": 0,
+            },
         )()
 
 
@@ -274,7 +286,14 @@ class ServiceTests(unittest.TestCase):
             repository = AppRepository(config.database_path)
             topic = _topic("爆点新闻", "爆")
             repository.save_topics([topic])
-            repository.save_ai_insight_success(topic, _detail(), "model-a")
+            repository.save_ai_insight_success(
+                topic,
+                _detail(),
+                "test-model",
+                prompt_version=PROMPT_VERSION,
+                api_mode="responses",
+                context_hash=build_context_hash(topic, ""),
+            )
             ai_client = FakeAIDetailClient()
 
             result = run_once(
@@ -287,6 +306,37 @@ class ServiceTests(unittest.TestCase):
 
             self.assertEqual(result.sent_count, 1)
             self.assertEqual(ai_client.calls, [])
+            repository.close()
+
+    def test_cached_ai_insight_regenerates_when_source_excerpt_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = _config(
+                temp_dir,
+                alert_tags=("爆",),
+                source_order=("xunjinlu",),
+                tag_recurrence_hours={"爆": 9999},
+            )
+            repository = AppRepository(config.database_path)
+            topic = _topic("爆点新闻", "爆")
+            repository.save_topics([topic])
+            repository.save_ai_insight_success(
+                topic,
+                _detail(),
+                "test-model",
+                prompt_version=PROMPT_VERSION,
+                api_mode="responses",
+                context_hash=build_context_hash(topic, ""),
+            )
+            ai_client = FakeAIDetailClient()
+            ai_client.detail = _detail()
+            enriched_topic = topic.with_source_material(source_excerpt="微博官方详情补充内容")
+
+            result = _generate_ai_detail_if_missing(config, repository, ai_client, enriched_topic)
+
+            self.assertEqual(result, "success")
+            self.assertEqual([topic.title for topic in ai_client.calls], ["爆点新闻"])
+            record = repository.get_ai_insight_record(topic.id)
+            self.assertEqual(record["context_hash"], build_context_hash(enriched_topic, enriched_topic.source_excerpt))
             repository.close()
 
 

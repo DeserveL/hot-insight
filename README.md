@@ -146,11 +146,12 @@ AI_DETAIL_ENABLED=true
 AI_DETAIL_BASE_URL=https://your-api.example.com/v1
 AI_DETAIL_API_KEY=
 AI_DETAIL_MODEL=
+AI_DETAIL_API_MODE=responses
 AI_DETAIL_WEB_SEARCH_OPTIONS={}
 AI_DETAIL_EXTRA_PAYLOAD_JSON={}
 ```
 
-AI 洞察依赖支持 Chat Completions 协议的 OpenAI 兼容接口。建议选择具备联网搜索能力的模型，以便生成包含来源链接的内容。不同服务商对搜索能力的配置方式可能不同，可通过 `AI_DETAIL_WEB_SEARCH_OPTIONS` 或 `AI_DETAIL_EXTRA_PAYLOAD_JSON` 传递兼容接口要求的附加字段。
+AI 洞察推荐使用支持 Responses API 与 `web_search` 的 OpenAI 兼容接口，以便生成包含来源链接的内容。若服务商只支持 Chat Completions，可将 `AI_DETAIL_API_MODE` 改为 `chat_completions`，并选择该服务商提供的搜索模型或搜索参数。
 
 ## Docker 部署
 
