@@ -77,3 +77,16 @@ export function tagTone(tag: string) {
   }
   return "bg-[#ECECF0] text-[#6E6E73]";
 }
+
+export function confidenceLabel(value: string) {
+  if (value === "high") {
+    return "高";
+  }
+  if (value === "medium") {
+    return "中";
+  }
+  if (value === "low") {
+    return "低";
+  }
+  return value || "未标注";
+}

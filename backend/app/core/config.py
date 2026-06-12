@@ -57,7 +57,7 @@ class AIDetailConfig:
     base_url: str = "https://api.openai.com/v1"
     api_key: str = ""
     model: str = ""
-    api_mode: str = "chat_completions"
+    api_mode: str = "responses"
     max_retries: int = 3
     timeout_seconds: int = 60
     temperature: float = 0.2
@@ -180,7 +180,7 @@ def _load_ai_detail_config() -> AIDetailConfig:
         base_url=os.getenv("AI_DETAIL_BASE_URL", "https://api.openai.com/v1").rstrip("/"),
         api_key=os.getenv("AI_DETAIL_API_KEY", ""),
         model=os.getenv("AI_DETAIL_MODEL", ""),
-        api_mode=os.getenv("AI_DETAIL_API_MODE", "chat_completions").strip().lower(),
+        api_mode=os.getenv("AI_DETAIL_API_MODE", "responses").strip().lower(),
         max_retries=max(_int_env("AI_DETAIL_MAX_RETRIES", 3), 1),
         timeout_seconds=max(_int_env("AI_DETAIL_TIMEOUT_SECONDS", 60), 1),
         temperature=_float_env("AI_DETAIL_TEMPERATURE", 0.2),

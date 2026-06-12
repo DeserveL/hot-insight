@@ -60,8 +60,18 @@ class AppRepository:
                 self.conn.execute(statement)
 
         ai_columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(ai_insights)").fetchall()}
-        if "takeaway" not in ai_columns:
-            self.conn.execute("ALTER TABLE ai_insights ADD COLUMN takeaway TEXT NOT NULL DEFAULT ''")
+        ai_migrations = {
+            "takeaway": "ALTER TABLE ai_insights ADD COLUMN takeaway TEXT NOT NULL DEFAULT ''",
+            "prompt_version": "ALTER TABLE ai_insights ADD COLUMN prompt_version TEXT NOT NULL DEFAULT ''",
+            "api_mode": "ALTER TABLE ai_insights ADD COLUMN api_mode TEXT NOT NULL DEFAULT ''",
+            "context_hash": "ALTER TABLE ai_insights ADD COLUMN context_hash TEXT NOT NULL DEFAULT ''",
+            "search_source_count": (
+                "ALTER TABLE ai_insights ADD COLUMN search_source_count INTEGER NOT NULL DEFAULT 0"
+            ),
+        }
+        for column, statement in ai_migrations.items():
+            if column not in ai_columns:
+                self.conn.execute(statement)
 
         self.conn.execute(
             """
@@ -485,7 +495,8 @@ class AppRepository:
             """
             SELECT
                 topic_id, title, status, summary, takeaway, facts_json, commentary, risk_note,
-                sources_json, confidence, error_message, model, created_at, updated_at
+                sources_json, confidence, error_message, model, prompt_version, api_mode,
+                context_hash, search_source_count, created_at, updated_at
             FROM ai_insights
             WHERE topic_id = ?
             """,
@@ -516,21 +527,36 @@ class AppRepository:
             "detail": detail,
             "error_message": row["error_message"],
             "model": row["model"],
+            "prompt_version": row["prompt_version"],
+            "api_mode": row["api_mode"],
+            "context_hash": row["context_hash"],
+            "search_source_count": row["search_source_count"],
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
         }
 
-    def save_ai_insight_success(self, topic: TopicCandidate, detail: AIDetail, model: str) -> None:
+    def save_ai_insight_success(
+        self,
+        topic: TopicCandidate,
+        detail: AIDetail,
+        model: str,
+        *,
+        prompt_version: str = "",
+        api_mode: str = "",
+        context_hash: str = "",
+        search_source_count: int = 0,
+    ) -> None:
         now = now_iso()
         self.conn.execute(
             """
             INSERT INTO ai_insights
                 (
                     topic_id, channel_id, title, status, summary, facts_json, commentary,
-                    takeaway, risk_note, sources_json, confidence, error_message, model, created_at, updated_at
+                    takeaway, risk_note, sources_json, confidence, error_message, model,
+                    prompt_version, api_mode, context_hash, search_source_count, created_at, updated_at
                 )
             VALUES
-                (?, ?, ?, 'success', ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?)
+                (?, ?, ?, 'success', ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(topic_id) DO UPDATE SET
                 channel_id = excluded.channel_id,
                 title = excluded.title,
@@ -544,6 +570,10 @@ class AppRepository:
                 confidence = excluded.confidence,
                 error_message = excluded.error_message,
                 model = excluded.model,
+                prompt_version = excluded.prompt_version,
+                api_mode = excluded.api_mode,
+                context_hash = excluded.context_hash,
+                search_source_count = excluded.search_source_count,
                 updated_at = excluded.updated_at
             """,
             (
@@ -558,30 +588,49 @@ class AppRepository:
                 json.dumps([source.to_dict() for source in detail.sources], ensure_ascii=False),
                 detail.confidence,
                 model,
+                prompt_version,
+                api_mode,
+                context_hash,
+                search_source_count,
                 now,
                 now,
             ),
         )
         self.conn.commit()
         logger.info(
-            "AI 洞察成功记录已保存: topic_id=%s title=%s model=%s sources=%s",
+            "AI 洞察成功记录已保存: topic_id=%s title=%s model=%s api_mode=%s prompt_version=%s context_hash=%s sources=%s search_sources=%s",
             topic.id,
             topic.title,
             model or "未配置",
+            api_mode or "-",
+            prompt_version or "-",
+            context_hash[:12] if context_hash else "-",
             len(detail.sources),
+            search_source_count,
         )
 
-    def save_ai_insight_failure(self, topic: TopicCandidate, error_message: str, model: str) -> None:
+    def save_ai_insight_failure(
+        self,
+        topic: TopicCandidate,
+        error_message: str,
+        model: str,
+        *,
+        prompt_version: str = "",
+        api_mode: str = "",
+        context_hash: str = "",
+        search_source_count: int = 0,
+    ) -> None:
         now = now_iso()
         self.conn.execute(
             """
             INSERT INTO ai_insights
                 (
                     topic_id, channel_id, title, status, summary, facts_json, commentary,
-                    takeaway, risk_note, sources_json, confidence, error_message, model, created_at, updated_at
+                    takeaway, risk_note, sources_json, confidence, error_message, model,
+                    prompt_version, api_mode, context_hash, search_source_count, created_at, updated_at
                 )
             VALUES
-                (?, ?, ?, 'failed', '', '[]', '', '', '', '[]', '', ?, ?, ?, ?)
+                (?, ?, ?, 'failed', '', '[]', '', '', '', '[]', '', ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(topic_id) DO UPDATE SET
                 channel_id = excluded.channel_id,
                 title = excluded.title,
@@ -595,16 +644,35 @@ class AppRepository:
                 confidence = excluded.confidence,
                 error_message = excluded.error_message,
                 model = excluded.model,
+                prompt_version = excluded.prompt_version,
+                api_mode = excluded.api_mode,
+                context_hash = excluded.context_hash,
+                search_source_count = excluded.search_source_count,
                 updated_at = excluded.updated_at
             """,
-            (topic.id, topic.channel_id, topic.title, error_message, model, now, now),
+            (
+                topic.id,
+                topic.channel_id,
+                topic.title,
+                error_message,
+                model,
+                prompt_version,
+                api_mode,
+                context_hash,
+                search_source_count,
+                now,
+                now,
+            ),
         )
         self.conn.commit()
         logger.info(
-            "AI 洞察失败记录已保存: topic_id=%s title=%s model=%s error=%s",
+            "AI 洞察失败记录已保存: topic_id=%s title=%s model=%s api_mode=%s prompt_version=%s context_hash=%s error=%s",
             topic.id,
             topic.title,
             model or "未配置",
+            api_mode or "-",
+            prompt_version or "-",
+            context_hash[:12] if context_hash else "-",
             error_message,
         )
 

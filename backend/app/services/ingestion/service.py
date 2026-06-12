@@ -12,7 +12,8 @@ from backend.app.core.config import AppConfig
 from backend.app.core.logging import logging_run, mask_external_target, redact_sensitive_text
 from backend.app.db.repositories import AppRepository
 from backend.app.domain.models import AIDetail, TopicCandidate, WEIBO_CHANNEL_ID, now_iso
-from backend.app.services.ai.detail_client import AIDetailClient
+from backend.app.services.ai.detail_client import AIContext, AIDetailClient, build_context_hash
+from backend.app.services.ai.prompts import PROMPT_VERSION
 from backend.app.services.ingestion.weibo_official import fetch_weibo_official_detail_material
 from backend.app.services.ingestion.weibo_sources import SourceError, build_weibo_sources
 from backend.app.services.notifications.router import NotificationRouter, build_notification_router
@@ -324,50 +325,106 @@ def _generate_ai_detail_if_missing(
     ai_client: AIDetailClient,
     topic: TopicCandidate,
 ) -> str:
+    context = _prepare_ai_context(ai_client, topic)
     cached = repository.get_ai_insight_record(topic.id)
     if cached:
-        if cached["status"] == "success" and cached["detail"] is not None:
+        if _ai_cache_matches(cached, config, context):
+            if cached["status"] == "success" and cached["detail"] is not None:
+                logger.info(
+                    "AI 洞察跳过调用: topic_id=%s title=%s reason=success_cache updated_at=%s prompt_version=%s api_mode=%s context_hash=%s",
+                    topic.id,
+                    topic.title,
+                    cached.get("updated_at") or "-",
+                    cached.get("prompt_version") or "-",
+                    cached.get("api_mode") or "-",
+                    str(cached.get("context_hash") or "")[:12] or "-",
+                )
+                return "skipped"
             logger.info(
-                "AI 洞察跳过调用: topic_id=%s title=%s reason=success_cache updated_at=%s",
+                "AI 洞察跳过调用: topic_id=%s title=%s reason=failed_cache updated_at=%s error=%s prompt_version=%s api_mode=%s context_hash=%s",
                 topic.id,
                 topic.title,
                 cached.get("updated_at") or "-",
+                cached.get("error_message") or "-",
+                cached.get("prompt_version") or "-",
+                cached.get("api_mode") or "-",
+                str(cached.get("context_hash") or "")[:12] or "-",
             )
             return "skipped"
         logger.info(
-            "AI 洞察跳过调用: topic_id=%s title=%s reason=failed_cache updated_at=%s error=%s",
+            "AI 洞察缓存失效，将重新生成: topic_id=%s title=%s status=%s cached_model=%s current_model=%s cached_api_mode=%s current_api_mode=%s cached_prompt=%s current_prompt=%s cached_context=%s current_context=%s",
             topic.id,
             topic.title,
-            cached.get("updated_at") or "-",
-            cached.get("error_message") or "-",
+            cached.get("status") or "-",
+            cached.get("model") or "-",
+            config.ai_detail.model or "未配置",
+            cached.get("api_mode") or "-",
+            config.ai_detail.api_mode,
+            cached.get("prompt_version") or "-",
+            PROMPT_VERSION,
+            str(cached.get("context_hash") or "")[:12] or "-",
+            context.context_hash[:12],
         )
-        return "skipped"
 
     logger.info("AI 洞察生成开始: topic_id=%s title=%s tag=%s", topic.id, topic.title, topic.tag)
     started = time.perf_counter()
-    result = ai_client.generate(topic)
+    result = ai_client.generate(topic, context=context) if hasattr(ai_client, "prepare_context") else ai_client.generate(topic)
     if result.ok and result.detail is not None:
-        repository.save_ai_insight_success(topic, result.detail, config.ai_detail.model)
+        repository.save_ai_insight_success(
+            topic,
+            result.detail,
+            config.ai_detail.model,
+            prompt_version=PROMPT_VERSION,
+            api_mode=config.ai_detail.api_mode,
+            context_hash=getattr(result, "context_hash", "") or context.context_hash,
+            search_source_count=getattr(result, "search_source_count", 0),
+        )
         logger.info(
-            "AI 洞察生成成功: topic_id=%s title=%s model=%s duration_ms=%.1f",
+            "AI 洞察生成成功: topic_id=%s title=%s model=%s api_mode=%s search_sources=%s duration_ms=%.1f",
             topic.id,
             topic.title,
             config.ai_detail.model or "未配置",
+            config.ai_detail.api_mode,
+            getattr(result, "search_source_count", 0),
             (time.perf_counter() - started) * 1000,
         )
         return "success"
 
     error_message = result.error_message or "AI 详情生成失败"
-    repository.save_ai_insight_failure(topic, error_message, config.ai_detail.model)
+    repository.save_ai_insight_failure(
+        topic,
+        error_message,
+        config.ai_detail.model,
+        prompt_version=PROMPT_VERSION,
+        api_mode=config.ai_detail.api_mode,
+        context_hash=getattr(result, "context_hash", "") or context.context_hash,
+        search_source_count=getattr(result, "search_source_count", 0),
+    )
     logger.warning(
-        "AI 洞察生成失败并已缓存: topic_id=%s title=%s model=%s duration_ms=%.1f error=%s",
+        "AI 洞察生成失败并已缓存: topic_id=%s title=%s model=%s api_mode=%s duration_ms=%.1f error=%s",
         topic.id,
         topic.title,
         config.ai_detail.model or "未配置",
+        config.ai_detail.api_mode,
         (time.perf_counter() - started) * 1000,
         error_message,
     )
     return "failed"
+
+
+def _prepare_ai_context(ai_client: AIDetailClient, topic: TopicCandidate) -> AIContext:
+    if hasattr(ai_client, "prepare_context"):
+        return ai_client.prepare_context(topic)
+    return AIContext(official_context="", context_hash=build_context_hash(topic, ""))
+
+
+def _ai_cache_matches(cached: dict, config: AppConfig, context: AIContext) -> bool:
+    return (
+        cached.get("model") == config.ai_detail.model
+        and cached.get("api_mode") == config.ai_detail.api_mode
+        and cached.get("prompt_version") == PROMPT_VERSION
+        and cached.get("context_hash") == context.context_hash
+    )
 
 
 def _load_cached_ai_detail_for_notification(

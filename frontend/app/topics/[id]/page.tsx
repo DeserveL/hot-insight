@@ -7,7 +7,7 @@ import { BentoCard } from "@/components/ui/bento-card";
 import { TagBadge } from "@/components/ui/tag-badge";
 import { getPublicSiteUrl, getTopic } from "@/lib/api";
 import type { Topic } from "@/lib/types";
-import { formatDateTime, formatDurationBetween, formatScore, sourceLabel } from "@/lib/utils";
+import { confidenceLabel, formatDateTime, formatDurationBetween, formatScore, sourceLabel } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
 
@@ -161,7 +161,7 @@ function AIDetailView({ topic }: { topic: Topic }) {
       </Section>
       <Section title="风险提示">
         <p>{detail.risk_note || "未能确认"}</p>
-        <div className="mt-5 text-sm font-semibold text-[#86868B]">可信度：{detail.confidence || "未标注"}</div>
+        <div className="mt-5 text-sm font-semibold text-[#86868B]">可信度：{confidenceLabel(detail.confidence)}</div>
       </Section>
       <Section title="参考来源">
         {detail.sources.length ? (

@@ -409,7 +409,7 @@ def render_ai_detail_html(ai_detail: AIDetail | None, ai_error: str = "") -> str
     )
     if not sources:
         sources = "<li>未能确认可靠来源链接</li>"
-    confidence = html.escape(ai_detail.confidence or "未标注")
+    confidence = html.escape(confidence_label(ai_detail.confidence))
     return f"""
 <div style="font-weight:bold;">AI 热点详情</div>
 <div style="margin-top:8px;font-weight:bold;line-height:1.6;">{html.escape(ai_detail.takeaway or "值得继续关注该热点后续进展。")}</div>
@@ -444,9 +444,19 @@ def render_topic_markdown(
         f"热点梳理：{ai_detail.summary}\n\n"
         f"关键事实：\n{facts}\n\n"
         f"AI 评价：{ai_detail.commentary or '未能确认'}\n\n"
-        f"风险提示：{ai_detail.risk_note or '未能确认'}（可信度：{ai_detail.confidence or '未标注'}）\n\n"
+        f"风险提示：{ai_detail.risk_note or '未能确认'}（可信度：{confidence_label(ai_detail.confidence)}）\n\n"
         f"参考来源：\n{sources}"
     )
+
+
+def confidence_label(value: str) -> str:
+    if value == "high":
+        return "高"
+    if value == "medium":
+        return "中"
+    if value == "low":
+        return "低"
+    return value or "未标注"
 
 
 def render_topics_markdown(topics: list[TopicCandidate], alert_tags: tuple[str, ...]) -> str:
