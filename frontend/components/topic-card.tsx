@@ -8,6 +8,9 @@ import { cn, formatDateTime, formatScore, sourceLabel } from "@/lib/utils";
 
 export function TopicCard({ topic, priority = false }: { topic: Topic; priority?: boolean }) {
   const summary = topic.ai_detail?.takeaway || topic.ai_detail?.summary || topic.ai_error || "洞察生成中，请稍后查看。";
+  const displayTag = topic.peak_tag || topic.tag;
+  const displayRank = topic.best_rank ?? topic.rank;
+  const displayScore = topic.peak_score ?? topic.score;
   return (
     <BentoCard
       interactive
@@ -18,14 +21,14 @@ export function TopicCard({ topic, priority = false }: { topic: Topic; priority?
     >
       <div className="flex items-start justify-between gap-4">
         <div className="flex items-center gap-3">
-          <TagBadge tag={topic.tag} />
+          <TagBadge tag={displayTag} />
           <div className="text-sm font-semibold text-[#86868B]">
-            {topic.rank === null ? "未排名" : `#${topic.rank}`}
+            {displayRank === null ? "未排名" : `最高 #${displayRank}`}
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-1.5 rounded-full bg-[#FFF5E6] px-3 py-1 text-sm font-semibold text-[#A66A2C]">
           <Flame className="h-3.5 w-3.5" aria-hidden="true" />
-          <span>{formatScore(topic.score)}</span>
+          <span>峰值 {formatScore(displayScore)}</span>
         </div>
       </div>
       <Link href={`/topics/${topic.id}`} className="mt-6 block">

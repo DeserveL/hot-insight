@@ -54,6 +54,9 @@ class AppRepository:
             ),
             "source_excerpt": "ALTER TABLE topics ADD COLUMN source_excerpt TEXT NOT NULL DEFAULT ''",
             "cover_image_url": "ALTER TABLE topics ADD COLUMN cover_image_url TEXT NOT NULL DEFAULT ''",
+            "peak_tag": "ALTER TABLE topics ADD COLUMN peak_tag TEXT NOT NULL DEFAULT ''",
+            "best_rank": "ALTER TABLE topics ADD COLUMN best_rank INTEGER",
+            "peak_score": "ALTER TABLE topics ADD COLUMN peak_score INTEGER",
         }
         for column, statement in migrations.items():
             if column not in columns:
@@ -79,6 +82,12 @@ class AppRepository:
                 ON topics(channel_id, title_key, last_seen_at DESC)
             """
         )
+        self.conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_topics_peak_tag_last_seen
+                ON topics(peak_tag, last_seen_at DESC)
+            """
+        )
         rows = self.conn.execute(
             """
             SELECT id, title, tag, first_seen_at, title_key, occurrence_started_at, recurrence_window_hours
@@ -102,6 +111,9 @@ class AppRepository:
                 """,
                 (title_key, occurrence_started_at, recurrence_window_hours, row["id"]),
             )
+        self.conn.execute("UPDATE topics SET peak_tag = tag WHERE peak_tag = ''")
+        self.conn.execute("UPDATE topics SET best_rank = rank WHERE best_rank IS NULL AND rank IS NOT NULL")
+        self.conn.execute("UPDATE topics SET peak_score = score WHERE peak_score IS NULL AND score IS NOT NULL")
 
     def ensure_channel(self, channel_id: str, name: str) -> None:
         now = now_iso()
@@ -204,13 +216,15 @@ class AppRepository:
             """
             INSERT INTO topics
                 (
-                    id, channel_id, title, title_key, url, source_excerpt, cover_image_url, tag, rank, score, source_id,
+                    id, channel_id, title, title_key, url, source_excerpt, cover_image_url,
+                    tag, peak_tag, rank, best_rank, score, peak_score, source_id,
                     occurrence_started_at, recurrence_window_hours,
                     first_seen_at, last_seen_at, seen_count
                 )
             VALUES
                 (
-                    :id, :channel_id, :title, :title_key, :url, :source_excerpt, :cover_image_url, :tag, :rank, :score, :source_id,
+                    :id, :channel_id, :title, :title_key, :url, :source_excerpt, :cover_image_url,
+                    :tag, :peak_tag, :rank, :best_rank, :score, :peak_score, :source_id,
                     :occurrence_started_at, :recurrence_window_hours,
                     :fetched_at, :fetched_at, 1
                 )
@@ -227,8 +241,38 @@ class AppRepository:
                     ELSE topics.cover_image_url
                 END,
                 tag = excluded.tag,
+                peak_tag = CASE
+                    WHEN (
+                        CASE excluded.peak_tag
+                            WHEN '爆' THEN 3
+                            WHEN '沸' THEN 2
+                            WHEN '热' THEN 1
+                            ELSE 0
+                        END
+                    ) > (
+                        CASE topics.peak_tag
+                            WHEN '爆' THEN 3
+                            WHEN '沸' THEN 2
+                            WHEN '热' THEN 1
+                            ELSE 0
+                        END
+                    ) THEN excluded.peak_tag
+                    ELSE topics.peak_tag
+                END,
                 rank = excluded.rank,
+                best_rank = CASE
+                    WHEN topics.best_rank IS NULL THEN excluded.best_rank
+                    WHEN excluded.best_rank IS NULL THEN topics.best_rank
+                    WHEN excluded.best_rank < topics.best_rank THEN excluded.best_rank
+                    ELSE topics.best_rank
+                END,
                 score = excluded.score,
+                peak_score = CASE
+                    WHEN topics.peak_score IS NULL THEN excluded.peak_score
+                    WHEN excluded.peak_score IS NULL THEN topics.peak_score
+                    WHEN excluded.peak_score > topics.peak_score THEN excluded.peak_score
+                    ELSE topics.peak_score
+                END,
                 source_id = excluded.source_id,
                 recurrence_window_hours = excluded.recurrence_window_hours,
                 last_seen_at = excluded.last_seen_at,
@@ -398,17 +442,28 @@ class AppRepository:
         params: list[object] = [channel_id]
         where = "channel_id = ?"
         if tag:
-            where += " AND tag = ?"
+            where += " AND peak_tag = ?"
             params.append(tag)
         rows = self.conn.execute(
             f"""
             SELECT
-                id, channel_id, title, title_key, url, source_excerpt, cover_image_url, tag, rank, score, source_id,
+                id, channel_id, title, title_key, url, source_excerpt, cover_image_url,
+                tag, peak_tag, rank, best_rank, score, peak_score, source_id,
                 occurrence_started_at, recurrence_window_hours,
                 first_seen_at, last_seen_at, seen_count
             FROM topics
             WHERE {where}
-            ORDER BY last_seen_at DESC, rank IS NULL ASC, rank ASC
+            ORDER BY
+                last_seen_at DESC,
+                CASE peak_tag
+                    WHEN '爆' THEN 3
+                    WHEN '沸' THEN 2
+                    WHEN '热' THEN 1
+                    ELSE 0
+                END DESC,
+                best_rank IS NULL ASC,
+                best_rank ASC,
+                peak_score DESC
             LIMIT ? OFFSET ?
             """,
             (*params, limit + 1, offset),
@@ -421,7 +476,8 @@ class AppRepository:
         row = self.conn.execute(
             """
             SELECT
-                id, channel_id, title, title_key, url, source_excerpt, cover_image_url, tag, rank, score, source_id,
+                id, channel_id, title, title_key, url, source_excerpt, cover_image_url,
+                tag, peak_tag, rank, best_rank, score, peak_score, source_id,
                 occurrence_started_at, recurrence_window_hours,
                 first_seen_at, last_seen_at, seen_count
             FROM topics
@@ -450,10 +506,10 @@ class AppRepository:
         latest = self.conn.execute("SELECT MAX(last_seen_at) AS last_seen_at FROM topics").fetchone()
         tags = self.conn.execute(
             """
-            SELECT tag, COUNT(*) AS count
+            SELECT peak_tag AS tag, COUNT(*) AS count
             FROM topics
-            WHERE channel_id = ? AND tag != ''
-            GROUP BY tag
+            WHERE channel_id = ? AND peak_tag != ''
+            GROUP BY peak_tag
             ORDER BY count DESC, tag ASC
             """,
             (WEIBO_CHANNEL_ID,),
@@ -706,8 +762,11 @@ def _topic_params(topic: TopicCandidate) -> dict:
         "source_excerpt": topic.source_excerpt,
         "cover_image_url": topic.cover_image_url,
         "tag": topic.tag,
+        "peak_tag": topic.tag,
         "rank": topic.rank,
+        "best_rank": topic.rank,
         "score": topic.score,
+        "peak_score": topic.score,
         "source_id": topic.source_id,
         "fetched_at": topic.fetched_at,
         "occurrence_started_at": topic.occurrence_started_at or topic.fetched_at,
@@ -778,6 +837,7 @@ def _topic_row_to_dict(row: sqlite3.Row, ai_record: dict | None) -> dict:
         "title": str(row["title"]),
         "title_key": str(row["title_key"]),
         "tag": str(row["tag"]),
+        "peak_tag": str(row["peak_tag"]),
         "url": str(row["url"]),
         "source_excerpt": str(row["source_excerpt"]),
         "cover_image_url": str(row["cover_image_url"]),
@@ -787,7 +847,9 @@ def _topic_row_to_dict(row: sqlite3.Row, ai_record: dict | None) -> dict:
         "first_seen_at": str(row["first_seen_at"]),
         "last_seen_at": str(row["last_seen_at"]),
         "rank": row["rank"],
+        "best_rank": row["best_rank"],
         "score": row["score"],
+        "peak_score": row["peak_score"],
         "seen_count": int(row["seen_count"]),
         "ai_status": ai_status,
         "ai_error": ai_error,

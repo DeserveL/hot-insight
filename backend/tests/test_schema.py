@@ -57,7 +57,10 @@ class SchemaTests(unittest.TestCase):
             self.assertIn("id", topic_columns)
             self.assertIn("title_key", topic_columns)
             self.assertIn("tag", topic_columns)
+            self.assertIn("peak_tag", topic_columns)
             self.assertIn("score", topic_columns)
+            self.assertIn("peak_score", topic_columns)
+            self.assertIn("best_rank", topic_columns)
             self.assertIn("occurrence_started_at", topic_columns)
             self.assertIn("recurrence_window_hours", topic_columns)
             self.assertIn("source_excerpt", topic_columns)
@@ -110,6 +113,9 @@ class SchemaTests(unittest.TestCase):
             self.assertEqual(topic["title_key"], "旧 热点")
             self.assertEqual(topic["occurrence_started_at"], "2026-06-09T00:00:00+08:00")
             self.assertEqual(topic["recurrence_window_hours"], 12)
+            self.assertEqual(topic["peak_tag"], "爆")
+            self.assertEqual(topic["best_rank"], 1)
+            self.assertEqual(topic["peak_score"], 100)
             repository.close()
 
     def test_official_detail_url_is_not_overwritten_by_lower_priority_source(self) -> None:
@@ -169,6 +175,40 @@ class SchemaTests(unittest.TestCase):
             self.assertEqual(repository.get_topic(first.id)["seen_count"], 2)
             repository.close()
 
+    def test_same_occurrence_preserves_peak_tag_best_rank_and_peak_score(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repository = AppRepository(Path(temp_dir) / "hot_insight.sqlite3")
+
+            first = repository.save_topics(
+                [_topic_at("峰值热点", "热", "2026-06-09T00:00:00+08:00", rank=11, score=1_000_000)]
+            )[0]
+            second = repository.save_topics(
+                [_topic_at("峰值热点", "爆", "2026-06-09T01:00:00+08:00", rank=1, score=3_000_000)]
+            )[0]
+            third = repository.save_topics(
+                [_topic_at("峰值热点", "热", "2026-06-09T02:00:00+08:00", rank=11, score=2_000_000)]
+            )[0]
+            saved = repository.get_topic(first.id)
+
+            self.assertEqual(second.id, first.id)
+            self.assertEqual(third.id, first.id)
+            self.assertEqual(saved["tag"], "热")
+            self.assertEqual(saved["rank"], 11)
+            self.assertEqual(saved["score"], 2_000_000)
+            self.assertEqual(saved["peak_tag"], "爆")
+            self.assertEqual(saved["best_rank"], 1)
+            self.assertEqual(saved["peak_score"], 3_000_000)
+            self.assertEqual(saved["seen_count"], 3)
+
+            bao_topics = repository.list_topics(tag="爆", limit=10)["items"]
+            re_topics = repository.list_topics(tag="热", limit=10)["items"]
+            summary = repository.get_trends_summary()
+
+            self.assertEqual([topic["id"] for topic in bao_topics], [first.id])
+            self.assertEqual(re_topics, [])
+            self.assertEqual(summary["tags"], [{"tag": "爆", "count": 1}])
+            repository.close()
+
     def test_new_occurrence_has_independent_ai_and_notification_records(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             repository = AppRepository(Path(temp_dir) / "hot_insight.sqlite3")
@@ -198,11 +238,11 @@ def _topic(source_id: str, url: str) -> TopicCandidate:
     )
 
 
-def _topic_at(title: str, tag: str, fetched_at: str) -> TopicCandidate:
+def _topic_at(title: str, tag: str, fetched_at: str, *, rank: int = 1, score: int = 100) -> TopicCandidate:
     return TopicCandidate(
         title=title,
-        rank=1,
-        score=100,
+        rank=rank,
+        score=score,
         tag=tag,
         url="https://s.weibo.com/weibo?q=test",
         source_id="test",
