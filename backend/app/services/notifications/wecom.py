@@ -17,7 +17,13 @@ import requests
 from backend.app.core.config import WeComConfig
 from backend.app.core.logging import redact_sensitive_text
 from backend.app.domain.models import AIDetail, TopicCandidate, now_iso
-from backend.app.services.notifications.renderers import notification_title, user_visible_ai_error
+from backend.app.services.notifications.renderers import (
+    compact_text,
+    confidence_label,
+    notification_meta_line,
+    notification_title,
+    user_visible_ai_error,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -346,7 +352,7 @@ def build_mpnews_payload(
                     "author": config.mpnews_author,
                     "content_source_url": detail_url or topic.url,
                     "content": render_mpnews_content(topic, ai_detail, ai_error, detail_url),
-                    "digest": _truncate(_digest(topic), 120),
+                    "digest": _truncate(_digest(topic, ai_detail), 120),
                 }
             ]
         },
@@ -360,68 +366,50 @@ def render_mpnews_content(
     ai_error: str = "",
     detail_url: str = "",
 ) -> str:
-    tag = html.escape(topic.tag or "无标记")
     title = html.escape(notification_title(topic))
-    rank = html.escape(f"#{topic.rank}" if topic.rank is not None else "-")
-    score = html.escape(format_score(topic.score))
-    source = html.escape(topic.source_id)
-    fetched_at = html.escape(topic.fetched_at)
+    meta = html.escape(notification_meta_line(topic, format_score(topic.score)))
     url = html.escape(topic.url, quote=True)
     detail_link = html.escape(detail_url, quote=True)
-    detail_html_link = f'<div style="margin-top:16px;"><a href="{detail_link}">查看网站详情页</a></div>' if detail_url else ""
-    source_excerpt = html.escape(topic.source_excerpt or "微博官方公开详情页暂未提供更多摘要。")
+    sections = []
+    if topic.source_excerpt.strip():
+        sections.append(_section_html("微博来源摘要", html.escape(topic.source_excerpt.strip())))
+    if ai_detail is not None:
+        sections.append(render_ai_detail_html(ai_detail))
 
-    detail_html = render_ai_detail_html(ai_detail, ai_error)
+    links = []
+    if detail_url:
+        links.append(f'<a href="{detail_link}">查看完整详情</a>')
+    links.append(f'<a href="{url}">查看微博来源</a>')
+    link_html = '<div style="margin-top:18px;line-height:1.9;">' + "　".join(links) + "</div>"
+
     return f"""
-<div style="font-size:18px;font-weight:bold;line-height:1.5;">{title}</div>
-<div style="margin:12px 0;padding:10px 12px;background:#fff7e6;border-left:4px solid #fa8c16;">
-  <div><strong>标记：</strong>{tag}</div>
-  <div><strong>排名：</strong>{rank}</div>
-  <div><strong>热度：</strong>{score}</div>
-  <div><strong>来源：</strong>{source}</div>
-  <div><strong>抓取时间：</strong>{fetched_at}</div>
-</div>
-<div style="margin:14px 0;">
-  <div style="font-weight:bold;">微博原始信息</div>
-  <div style="margin-top:8px;line-height:1.6;">{source_excerpt}</div>
-</div>
-<div style="margin:14px 0;">
-  {detail_html}
-</div>
-{detail_html_link}
-<div style="margin-top:16px;"><a href="{url}">查看微博来源</a></div>
+<div style="font-size:20px;font-weight:bold;line-height:1.45;">{title}</div>
+<div style="margin-top:8px;color:#666;line-height:1.6;">{meta}</div>
+{''.join(sections)}
+{link_html}
 """.strip()
 
 
 def render_ai_detail_html(ai_detail: AIDetail | None, ai_error: str = "") -> str:
     if ai_detail is None:
-        error = html.escape(ai_error or "AI 详情生成失败")
-        return (
-            '<div style="font-weight:bold;">AI 热点详情</div>'
-            f'<div style="color:#666;line-height:1.6;">{user_visible_ai_error(error)}</div>'
-        )
+        return ""
 
     facts = "".join(f"<li>{html.escape(fact)}</li>" for fact in ai_detail.facts)
     sources = "".join(
         f'<li><a href="{html.escape(source.url, quote=True)}">{html.escape(source.title or source.url)}</a></li>'
-        for source in ai_detail.sources
+        for source in ai_detail.sources[:3]
         if source.url
     )
     if not sources:
         sources = "<li>未能确认可靠来源链接</li>"
     confidence = html.escape(confidence_label(ai_detail.confidence))
     return f"""
-<div style="font-weight:bold;">AI 热点详情</div>
-<div style="margin-top:8px;font-weight:bold;line-height:1.6;">{html.escape(ai_detail.takeaway or "值得继续关注该热点后续进展。")}</div>
-<div style="margin-top:8px;line-height:1.6;">{html.escape(ai_detail.summary)}</div>
-<div style="margin-top:12px;font-weight:bold;">关键事实</div>
-<ul>{facts or "<li>未能确认</li>"}</ul>
-<div style="margin-top:12px;font-weight:bold;">AI 评价</div>
-<div style="line-height:1.6;">{html.escape(ai_detail.commentary or "未能确认")}</div>
-<div style="margin-top:12px;font-weight:bold;">风险提示</div>
-<div style="line-height:1.6;">{html.escape(ai_detail.risk_note or "未能确认")}（可信度：{confidence}）</div>
-<div style="margin-top:12px;font-weight:bold;">参考来源</div>
-<ul>{sources}</ul>
+{_section_html("一句话结论", html.escape(ai_detail.takeaway or "值得继续关注该热点后续进展。"), featured=True)}
+{_section_html("热点梳理", html.escape(ai_detail.summary or "未能确认"))}
+{_section_html("关键事实", f"<ul>{facts or '<li>未能确认</li>'}</ul>")}
+{_section_html("AI 评价", html.escape(ai_detail.commentary or "未能确认"))}
+{_section_html("风险提示", f"{html.escape(ai_detail.risk_note or '未能确认')}<div style='margin-top:6px;color:#666;'>核验程度：{confidence}</div>")}
+{_section_html("参考来源", f"<ul>{sources}</ul>")}
 """.strip()
 
 
@@ -444,19 +432,9 @@ def render_topic_markdown(
         f"热点梳理：{ai_detail.summary}\n\n"
         f"关键事实：\n{facts}\n\n"
         f"AI 评价：{ai_detail.commentary or '未能确认'}\n\n"
-        f"风险提示：{ai_detail.risk_note or '未能确认'}（可信度：{confidence_label(ai_detail.confidence)}）\n\n"
+        f"风险提示：{ai_detail.risk_note or '未能确认'}（核验程度：{confidence_label(ai_detail.confidence)}）\n\n"
         f"参考来源：\n{sources}"
     )
-
-
-def confidence_label(value: str) -> str:
-    if value == "high":
-        return "高"
-    if value == "medium":
-        return "中"
-    if value == "low":
-        return "低"
-    return value or "未标注"
 
 
 def render_topics_markdown(topics: list[TopicCandidate], alert_tags: tuple[str, ...]) -> str:
@@ -464,18 +442,14 @@ def render_topics_markdown(topics: list[TopicCandidate], alert_tags: tuple[str, 
         f"**热点洞察 {len(topics)} 条**",
         "",
         f"> 时间：{now_iso()}",
-        f"> 推送标记：{', '.join(alert_tags) if alert_tags else '未配置'}",
         "",
     ]
     for index, topic in enumerate(topics, start=1):
-        tag = f"【{topic.tag}】" if topic.tag else "【无标记】"
-        rank = f"#{topic.rank}" if topic.rank is not None else "-"
-        score = format_score(topic.score)
         title = _escape_link_text(notification_title(topic))
         lines.extend(
             [
-                f"{index}. <font color=\"warning\">{tag}</font> [{title}]({topic.url})",
-                f"   排名：{rank} | 热度：{score} | 来源：{topic.source_id}",
+                f"{index}. [{title}]({topic.url})",
+                f"   {notification_meta_line(topic, format_score(topic.score))}",
                 "",
             ]
         )
@@ -494,11 +468,22 @@ def format_score(value: int | None) -> str:
     return f"{value:,}"
 
 
-def _digest(topic: TopicCandidate) -> str:
-    tag = f"【{topic.tag}】" if topic.tag else ""
-    rank = f"排名 #{topic.rank}" if topic.rank is not None else "排名 -"
-    score = f"热度 {format_score(topic.score)}"
-    return f"{tag}{rank} | {score} | 来源 {topic.source_id}"
+def _digest(topic: TopicCandidate, ai_detail: AIDetail | None = None) -> str:
+    if ai_detail is not None:
+        text = compact_text(ai_detail.takeaway or ai_detail.summary, 120)
+        if text:
+            return text
+    return user_visible_ai_error() if ai_detail is None else notification_meta_line(topic, format_score(topic.score))
+
+
+def _section_html(title: str, body: str, *, featured: bool = False) -> str:
+    body_style = "font-size:17px;font-weight:bold;line-height:1.7;color:#1f2937;" if featured else "line-height:1.7;color:#333;"
+    return f"""
+<div style="margin-top:18px;">
+  <div style="font-size:13px;font-weight:bold;color:#777;">{html.escape(title)}</div>
+  <div style="margin-top:8px;{body_style}">{body}</div>
+</div>
+""".strip()
 
 
 def _escape_link_text(text: str) -> str:
