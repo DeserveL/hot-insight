@@ -16,7 +16,7 @@ import requests
 
 from backend.app.core.config import WeComConfig
 from backend.app.core.logging import redact_sensitive_text
-from backend.app.domain.models import AIDetail, TopicCandidate, now_iso
+from backend.app.domain.models import AIDetail, TopicCandidate, now_iso, weibo_mobile_search_url
 from backend.app.services.notifications.renderers import (
     compact_text,
     confidence_label,
@@ -336,6 +336,7 @@ def build_mpnews_payload(
     ai_error: str = "",
     detail_url: str = "",
 ) -> dict:
+    source_url = weibo_mobile_search_url(topic.title) or topic.url
     return {
         "touser": config.to_user,
         "msgtype": "mpnews",
@@ -346,7 +347,7 @@ def build_mpnews_payload(
                     "title": _truncate(notification_title(topic), 64),
                     "thumb_media_id": thumb_media_id,
                     "author": config.mpnews_author,
-                    "content_source_url": detail_url or topic.url,
+                    "content_source_url": detail_url or source_url,
                     "content": render_mpnews_content(topic, ai_detail, ai_error, detail_url),
                     "digest": _truncate(_digest(topic, ai_detail), 120),
                 }
@@ -364,11 +365,20 @@ def render_mpnews_content(
 ) -> str:
     title = html.escape(notification_title(topic))
     meta = html.escape(notification_meta_line(topic, format_score(topic.score)))
-    url = html.escape(topic.url, quote=True)
+    source_url = weibo_mobile_search_url(topic.title) or topic.url
+    url = html.escape(source_url, quote=True)
     detail_link = html.escape(detail_url, quote=True)
     sections = []
     if topic.source_excerpt.strip():
-        sections.append(_section_html("微博来源摘要", html.escape(topic.source_excerpt.strip())))
+        sections.append(_section_html("微博实时材料", html.escape(topic.source_excerpt.strip())))
+    if topic.realtime_posts:
+        post_items = "".join(
+            f"<li>{html.escape(_compact_realtime_post(post))}</li>"
+            for post in topic.realtime_posts[:3]
+            if post.text
+        )
+        if post_items:
+            sections.append(_section_html("实时博文", f"<ul>{post_items}</ul>"))
     if ai_detail is not None:
         sections.append(render_ai_detail_html(ai_detail))
 
@@ -418,12 +428,17 @@ def render_topic_markdown(
 ) -> str:
     base = render_topics_markdown([topic], alert_tags)
     detail_line = f"\n\n网站详情：{detail_url}" if detail_url else ""
+    realtime_line = (
+        f"\n\n微博实时材料：{compact_text(topic.source_excerpt, 160)}"
+        if topic.source_excerpt.strip()
+        else ""
+    )
     if ai_detail is None:
-        return f"{base}{detail_line}\n\nAI 洞察：{user_visible_ai_error(ai_error)}"
+        return f"{base}{detail_line}{realtime_line}\n\nAI 洞察：{user_visible_ai_error(ai_error)}"
     facts = "\n".join(f"- {fact}" for fact in ai_detail.facts) or "- 未能确认"
     sources = "\n".join(f"- {source.title or source.url}: {source.url}" for source in ai_detail.sources) or "- 未能确认"
     return (
-        f"{base}{detail_line}\n\n"
+        f"{base}{detail_line}{realtime_line}\n\n"
         f"一句话结论：{ai_detail.takeaway or '值得继续关注该热点后续进展。'}\n\n"
         f"热点梳理：{ai_detail.summary}\n\n"
         f"关键事实：\n{facts}\n\n"
@@ -442,9 +457,10 @@ def render_topics_markdown(topics: list[TopicCandidate], alert_tags: tuple[str, 
     ]
     for index, topic in enumerate(topics, start=1):
         title = _escape_link_text(notification_title(topic))
+        source_url = weibo_mobile_search_url(topic.title) or topic.url
         lines.extend(
             [
-                f"{index}. [{title}]({topic.url})",
+                f"{index}. [{title}]({source_url})",
                 f"   {notification_meta_line(topic, format_score(topic.score))}",
                 "",
             ]
@@ -470,6 +486,11 @@ def _digest(topic: TopicCandidate, ai_detail: AIDetail | None = None) -> str:
         if text:
             return text
     return user_visible_ai_error() if ai_detail is None else notification_meta_line(topic, format_score(topic.score))
+
+
+def _compact_realtime_post(post) -> str:
+    prefix = f"{post.author}：" if post.author else ""
+    return compact_text(f"{prefix}{post.text}", 160)
 
 
 def _section_html(title: str, body: str, *, featured: bool = False) -> str:

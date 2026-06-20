@@ -12,9 +12,12 @@ from backend.app.core.config import AppConfig
 from backend.app.core.logging import logging_run, mask_external_target, redact_sensitive_text
 from backend.app.db.repositories import AppRepository
 from backend.app.domain.models import AIDetail, TopicCandidate, WEIBO_CHANNEL_ID, now_iso
-from backend.app.services.ai.detail_client import AIContext, AIDetailClient, build_context_hash
+from backend.app.services.ai.detail_client import AIContext, AIDetailClient, build_context_hash, combine_weibo_context
 from backend.app.services.ai.prompts import PROMPT_VERSION
-from backend.app.services.ingestion.weibo_official import fetch_weibo_official_detail_material
+from backend.app.services.ingestion.weibo_official import (
+    fetch_weibo_mobile_search_material,
+    fetch_weibo_official_detail_material,
+)
 from backend.app.services.ingestion.weibo_sources import SourceError, build_weibo_sources
 from backend.app.services.notifications.router import NotificationRouter, build_notification_router
 from backend.app.services.notifications.wecom_robot import send_wecom_robot_health_alert
@@ -328,6 +331,7 @@ def _generate_ai_detail_if_missing(
 ) -> str:
     context = _prepare_ai_context(ai_client, topic)
     cached = repository.get_ai_insight_record(topic.id)
+    retrying_failed_cache = False
     if cached:
         if _ai_cache_matches(cached, config, context):
             if cached["status"] == "success" and cached["detail"] is not None:
@@ -341,17 +345,40 @@ def _generate_ai_detail_if_missing(
                     str(cached.get("context_hash") or "")[:12] or "-",
                 )
                 return "skipped"
-            logger.info(
-                "AI 洞察跳过调用: topic_id=%s title=%s reason=failed_cache updated_at=%s error=%s prompt_version=%s api_mode=%s context_hash=%s",
-                topic.id,
-                topic.title,
-                cached.get("updated_at") or "-",
-                cached.get("error_message") or "-",
-                cached.get("prompt_version") or "-",
-                cached.get("api_mode") or "-",
-                str(cached.get("context_hash") or "")[:12] or "-",
-            )
-            return "skipped"
+            if context.combined_context:
+                failed_retry_context_hash = str(cached.get("failed_retry_context_hash") or "")
+                if failed_retry_context_hash == context.context_hash:
+                    logger.info(
+                        "AI 洞察跳过调用: topic_id=%s title=%s reason=failed_cache_retry_used updated_at=%s error=%s prompt_version=%s api_mode=%s context_hash=%s",
+                        topic.id,
+                        topic.title,
+                        cached.get("updated_at") or "-",
+                        cached.get("error_message") or "-",
+                        cached.get("prompt_version") or "-",
+                        cached.get("api_mode") or "-",
+                        str(cached.get("context_hash") or "")[:12] or "-",
+                    )
+                    return "skipped"
+                retrying_failed_cache = True
+                logger.info(
+                    "AI 洞察失败缓存有新微博材料，将重试一次: topic_id=%s title=%s updated_at=%s context_hash=%s",
+                    topic.id,
+                    topic.title,
+                    cached.get("updated_at") or "-",
+                    str(cached.get("context_hash") or "")[:12] or "-",
+                )
+            else:
+                logger.info(
+                    "AI 洞察跳过调用: topic_id=%s title=%s reason=failed_cache updated_at=%s error=%s prompt_version=%s api_mode=%s context_hash=%s",
+                    topic.id,
+                    topic.title,
+                    cached.get("updated_at") or "-",
+                    cached.get("error_message") or "-",
+                    cached.get("prompt_version") or "-",
+                    cached.get("api_mode") or "-",
+                    str(cached.get("context_hash") or "")[:12] or "-",
+                )
+                return "skipped"
         logger.info(
             "AI 洞察缓存失效，将重新生成: topic_id=%s title=%s status=%s cached_model=%s current_model=%s cached_api_mode=%s current_api_mode=%s cached_prompt=%s current_prompt=%s cached_context=%s current_context=%s",
             topic.id,
@@ -399,6 +426,7 @@ def _generate_ai_detail_if_missing(
         prompt_version=PROMPT_VERSION,
         api_mode=config.ai_detail.api_mode,
         context_hash=getattr(result, "context_hash", "") or context.context_hash,
+        failed_retry_context_hash=context.context_hash if retrying_failed_cache and context.combined_context else "",
         search_source_count=getattr(result, "search_source_count", 0),
     )
     logger.warning(
@@ -416,7 +444,22 @@ def _generate_ai_detail_if_missing(
 def _prepare_ai_context(ai_client: AIDetailClient, topic: TopicCandidate) -> AIContext:
     if hasattr(ai_client, "prepare_context"):
         return ai_client.prepare_context(topic)
-    return AIContext(official_context="", context_hash=build_context_hash(topic, ""))
+    official_context = topic.official_context or (topic.source_excerpt if topic.source_excerpt_origin == "official" else "")
+    mobile_context = topic.mobile_context or (
+        topic.source_excerpt if topic.source_excerpt and topic.source_excerpt_origin != "official" else ""
+    )
+    combined = combine_weibo_context(official_context, mobile_context, topic.realtime_posts)
+    return AIContext(
+        official_context=official_context,
+        mobile_context=mobile_context,
+        realtime_posts=topic.realtime_posts,
+        combined_context=combined,
+        context_hash=build_context_hash(
+            topic,
+            official_context,
+            has_mobile_context=bool(mobile_context or topic.realtime_posts),
+        ),
+    )
 
 
 def _ai_cache_matches(cached: dict, config: AppConfig, context: AIContext) -> bool:
@@ -561,33 +604,66 @@ def _enrich_official_source_material(
     if not topics:
         return topics
     timeout = max(1, min(config.weibo_official_timeout_seconds, config.fetch_timeout_seconds))
+    mobile_timeout = max(1, min(config.weibo_mobile_timeout_seconds, config.fetch_timeout_seconds))
     enriched: list[TopicCandidate] = []
     enriched_count = 0
     excerpt_count = 0
     cover_count = 0
+    mobile_enriched_count = 0
+    mobile_post_count = 0
     started = time.perf_counter()
     for topic in topics:
-        material = fetch_weibo_official_detail_material(session, topic.url, timeout)
-        if not material.source_excerpt and not material.cover_image_url:
+        official_material = fetch_weibo_official_detail_material(session, topic.url, timeout)
+        mobile_material = (
+            fetch_weibo_mobile_search_material(
+                session,
+                topic.title,
+                mobile_timeout,
+                max_posts=config.weibo_mobile_max_posts,
+                max_retries=config.weibo_mobile_max_retries,
+            )
+            if config.weibo_mobile_enabled
+            else None
+        )
+        mobile_excerpt = mobile_material.source_excerpt if mobile_material is not None else ""
+        mobile_cover = mobile_material.cover_image_url if mobile_material is not None else ""
+        realtime_posts = mobile_material.realtime_posts if mobile_material is not None else ()
+        source_excerpt = official_material.source_excerpt or mobile_excerpt
+        source_excerpt_origin = "official" if official_material.source_excerpt else "mobile" if mobile_excerpt else ""
+        cover_image_url = official_material.cover_image_url or mobile_cover
+
+        if not source_excerpt and not cover_image_url and not realtime_posts:
             enriched.append(topic)
             continue
         enriched_count += 1
-        if material.source_excerpt:
+        if mobile_excerpt or realtime_posts:
+            mobile_enriched_count += 1
+            mobile_post_count += len(realtime_posts)
+        if source_excerpt:
             excerpt_count += 1
-        if material.cover_image_url:
+        if cover_image_url:
             cover_count += 1
         enriched.append(
             topic.with_source_material(
-                source_excerpt=material.source_excerpt,
-                cover_image_url=material.cover_image_url,
+                source_excerpt=source_excerpt,
+                cover_image_url=cover_image_url,
+                realtime_posts=realtime_posts,
+                source_excerpt_origin=source_excerpt_origin,
+                official_context=official_material.source_excerpt,
+                mobile_context=mobile_excerpt,
             )
         )
     logger.info(
-        "微博官方原始材料补充完成: topics=%s enriched=%s source_excerpt=%s cover_image=%s duration_ms=%.1f",
+        (
+            "微博原始材料补充完成: topics=%s enriched=%s source_excerpt=%s cover_image=%s "
+            "mobile_enriched=%s mobile_posts=%s duration_ms=%.1f"
+        ),
         len(topics),
         enriched_count,
         excerpt_count,
         cover_count,
+        mobile_enriched_count,
+        mobile_post_count,
         (time.perf_counter() - started) * 1000,
     )
     return enriched

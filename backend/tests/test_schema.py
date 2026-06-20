@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from backend.app.db.repositories import AppRepository
-from backend.app.domain.models import TopicCandidate
+from backend.app.domain.models import TopicCandidate, WeiboRealtimePost
 
 
 class SchemaTests(unittest.TestCase):
@@ -64,12 +64,15 @@ class SchemaTests(unittest.TestCase):
             self.assertIn("occurrence_started_at", topic_columns)
             self.assertIn("recurrence_window_hours", topic_columns)
             self.assertIn("source_excerpt", topic_columns)
+            self.assertIn("source_excerpt_origin", topic_columns)
             self.assertIn("cover_image_url", topic_columns)
+            self.assertIn("realtime_posts_json", topic_columns)
             ai_columns = {row[1] for row in conn.execute("PRAGMA table_info(ai_insights)")}
             self.assertIn("takeaway", ai_columns)
             self.assertIn("prompt_version", ai_columns)
             self.assertIn("api_mode", ai_columns)
             self.assertIn("context_hash", ai_columns)
+            self.assertIn("failed_retry_context_hash", ai_columns)
             self.assertIn("search_source_count", ai_columns)
             conn.close()
 
@@ -87,6 +90,7 @@ class SchemaTests(unittest.TestCase):
                     tag TEXT NOT NULL,
                     rank INTEGER,
                     score INTEGER,
+                    source_excerpt TEXT NOT NULL DEFAULT '',
                     source_id TEXT NOT NULL,
                     first_seen_at TEXT NOT NULL,
                     last_seen_at TEXT NOT NULL,
@@ -97,10 +101,13 @@ class SchemaTests(unittest.TestCase):
             conn.execute(
                 """
                 INSERT INTO topics
-                    (id, channel_id, title, url, tag, rank, score, source_id, first_seen_at, last_seen_at, seen_count)
+                    (
+                        id, channel_id, title, url, tag, rank, score, source_excerpt, source_id,
+                        first_seen_at, last_seen_at, seen_count
+                    )
                 VALUES
                     ('legacy-topic', 'weibo', '  旧 热点  ', 'https://s.weibo.com/weibo?q=test',
-                     '爆', 1, 100, 'legacy', '2026-06-09T00:00:00+08:00',
+                     '爆', 1, 100, '旧摘要', 'legacy', '2026-06-09T00:00:00+08:00',
                      '2026-06-09T00:00:00+08:00', 1)
                 """
             )
@@ -109,6 +116,9 @@ class SchemaTests(unittest.TestCase):
 
             repository = AppRepository(database_path)
             topic = repository.get_topic("legacy-topic")
+            origin = repository.conn.execute(
+                "SELECT source_excerpt_origin FROM topics WHERE id = 'legacy-topic'"
+            ).fetchone()[0]
 
             self.assertEqual(topic["title_key"], "旧 热点")
             self.assertEqual(topic["occurrence_started_at"], "2026-06-09T00:00:00+08:00")
@@ -116,6 +126,72 @@ class SchemaTests(unittest.TestCase):
             self.assertEqual(topic["peak_tag"], "爆")
             self.assertEqual(topic["best_rank"], 1)
             self.assertEqual(topic["peak_score"], 100)
+            self.assertEqual(topic["source_excerpt"], "旧摘要")
+            self.assertEqual(origin, "mobile")
+            self.assertEqual(topic["realtime_posts"], [])
+            self.assertIn("m.weibo.cn/search", topic["mobile_url"])
+            repository.close()
+
+    def test_realtime_posts_are_stored_and_mobile_excerpt_does_not_overwrite_existing_excerpt(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repository = AppRepository(Path(temp_dir) / "hot_insight.sqlite3")
+            first = _topic_at("实时热点", "爆", "2026-06-09T00:00:00+08:00").with_source_material(
+                source_excerpt="移动摘要",
+                source_excerpt_origin="mobile",
+                realtime_posts=[
+                    WeiboRealtimePost(
+                        author="用户A",
+                        created_at="2026-06-09T00:00:00+08:00",
+                        text="实时内容",
+                        reposts=1,
+                        comments=2,
+                        attitudes=3,
+                        url="https://m.weibo.cn/status/1",
+                    )
+                ],
+            )
+            repository.save_topics([first])
+            second = _topic_at("实时热点", "爆", "2026-06-09T01:00:00+08:00").with_source_material(
+                source_excerpt="新的移动摘要",
+                source_excerpt_origin="mobile",
+            )
+            repository.save_topics([second])
+            third = _topic_at("实时热点", "爆", "2026-06-09T02:00:00+08:00")
+            repository.save_topics([third])
+            saved = repository.get_topic(first.id)
+            origin = repository.conn.execute(
+                "SELECT source_excerpt_origin FROM topics WHERE id = ?",
+                (first.id,),
+            ).fetchone()[0]
+
+            self.assertEqual(saved["source_excerpt"], "移动摘要")
+            self.assertEqual(saved["realtime_posts"][0]["author"], "用户A")
+            self.assertIn("m.weibo.cn/search", saved["mobile_url"])
+            self.assertEqual(origin, "mobile")
+            repository.close()
+
+    def test_official_excerpt_overwrites_mobile_excerpt(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repository = AppRepository(Path(temp_dir) / "hot_insight.sqlite3")
+            mobile = _topic_at("官方覆盖热点", "爆", "2026-06-09T00:00:00+08:00").with_source_material(
+                source_excerpt="移动摘要",
+                source_excerpt_origin="mobile",
+            )
+            official = _topic_at("官方覆盖热点", "爆", "2026-06-09T01:00:00+08:00").with_source_material(
+                source_excerpt="官方摘要",
+                source_excerpt_origin="official",
+            )
+
+            repository.save_topics([mobile])
+            repository.save_topics([official])
+            saved = repository.get_topic(mobile.id)
+            origin = repository.conn.execute(
+                "SELECT source_excerpt_origin FROM topics WHERE id = ?",
+                (mobile.id,),
+            ).fetchone()[0]
+
+            self.assertEqual(saved["source_excerpt"], "官方摘要")
+            self.assertEqual(origin, "official")
             repository.close()
 
     def test_official_detail_url_is_not_overwritten_by_lower_priority_source(self) -> None:

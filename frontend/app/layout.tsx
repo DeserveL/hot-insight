@@ -17,6 +17,7 @@ export const metadata: Metadata = {
   description: "追踪微博热搜，整理事实脉络与 AI 辅助洞察。",
   icons: {
     icon: "/favicon.ico",
+    apple: "/apple-touch-icon.png",
   },
   openGraph: {
     title: "热点洞察",

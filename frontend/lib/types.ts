@@ -21,8 +21,10 @@ export type Topic = {
   tag: string;
   peak_tag: string;
   url: string;
+  mobile_url?: string;
   source_excerpt: string;
   cover_image_url: string;
+  realtime_posts?: RealtimePost[];
   source_id: string;
   occurrence_started_at: string;
   recurrence_window_hours: number;
@@ -37,6 +39,16 @@ export type Topic = {
   ai_error: string;
   ai_detail: AIDetail | null;
   observations?: TopicObservation[];
+};
+
+export type RealtimePost = {
+  author: string;
+  created_at: string;
+  text: string;
+  reposts: number | null;
+  comments: number | null;
+  attitudes: number | null;
+  url: string;
 };
 
 export type TopicObservation = {

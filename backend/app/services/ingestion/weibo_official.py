@@ -5,6 +5,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass
+from datetime import date, datetime, timedelta
 from html import unescape
 from urllib.parse import quote, urlencode, urljoin, urlparse
 
@@ -12,7 +13,7 @@ import requests
 from bs4 import BeautifulSoup, Tag
 
 from backend.app.core.logging import redact_sensitive_text
-from backend.app.domain.models import SourceResult, TopicCandidate, now_iso, weibo_search_url
+from backend.app.domain.models import SourceResult, TopicCandidate, WeiboRealtimePost, now_iso, weibo_search_url
 from backend.app.services.ingestion.weibo_sources import HotTopicSource, SourceError
 
 logger = logging.getLogger(__name__)
@@ -20,6 +21,10 @@ logger = logging.getLogger(__name__)
 WEIBO_TOP_URL = "https://s.weibo.com/top/summary?cate=realtimehot"
 WEIBO_REALTIME_URL = "https://weibo.com/a/hot/realtime"
 WEIBO_DETAIL_PREFIX = "https://weibo.com/a/hot/"
+WEIBO_MOBILE_HOME_URL = "https://m.weibo.cn/"
+WEIBO_MOBILE_SEARCH_API = "https://m.weibo.cn/api/container/getIndex"
+WEIBO_MOBILE_CONTAINER_TEMPLATE = "100103type=1&q={keyword}"
+WEIBO_MOBILE_FRESHNESS_DAYS = 7
 
 VISITOR_URL = "https://passport.weibo.com/visitor/genvisitor2"
 CROSSDOMAIN_URL = "https://login.sina.com.cn/visitor/visitor"
@@ -46,11 +51,30 @@ WEIBO_BROWSER_HEADERS = {
     ),
 }
 
+WEIBO_MOBILE_HEADERS = {
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "zh-CN,zh;q=0.9",
+    "MWeibo-Pwa": "1",
+    "Referer": "https://m.weibo.cn/",
+    "User-Agent": (
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+        "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+    ),
+    "X-Requested-With": "XMLHttpRequest",
+}
+
 
 @dataclass(frozen=True)
 class WeiboOfficialDetailMaterial:
     source_excerpt: str = ""
     cover_image_url: str = ""
+
+
+@dataclass(frozen=True)
+class WeiboMobileSearchMaterial:
+    source_excerpt: str = ""
+    cover_image_url: str = ""
+    realtime_posts: tuple[WeiboRealtimePost, ...] = ()
 
 
 class WeiboOfficialHotTopicSource(HotTopicSource):
@@ -417,6 +441,87 @@ def fetch_weibo_official_detail_material(
     return parse_weibo_official_detail_material(html, max_excerpt_chars=max_excerpt_chars)
 
 
+def fetch_weibo_mobile_search_material(
+    session: requests.Session,
+    title: str,
+    timeout: int,
+    *,
+    max_posts: int = 3,
+    max_excerpt_chars: int = 1200,
+    max_retries: int = 2,
+) -> WeiboMobileSearchMaterial:
+    keyword = _normalize_topic_title(title)
+    if not keyword or max_posts <= 0:
+        return WeiboMobileSearchMaterial()
+
+    params = {"containerid": WEIBO_MOBILE_CONTAINER_TEMPLATE.format(keyword=keyword)}
+    for attempt in range(1, max(max_retries, 1) + 1):
+        try:
+            response = session.get(
+                WEIBO_MOBILE_SEARCH_API,
+                params=params,
+                timeout=timeout,
+                headers=WEIBO_MOBILE_HEADERS,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            material = parse_weibo_mobile_search_cards(
+                payload,
+                keyword=keyword,
+                max_posts=max_posts,
+                max_excerpt_chars=max_excerpt_chars,
+            )
+            if material.source_excerpt or material.realtime_posts or material.cover_image_url:
+                return material
+            if attempt == 1:
+                _ensure_mobile_guest_cookie(session, timeout)
+        except Exception as exc:
+            logger.info(
+                "微博移动端词页获取失败: title=%s attempt=%s/%s error=%s",
+                title,
+                attempt,
+                max(max_retries, 1),
+                redact_sensitive_text(exc),
+            )
+            if attempt == 1:
+                _ensure_mobile_guest_cookie(session, timeout)
+    return WeiboMobileSearchMaterial()
+
+
+def parse_weibo_mobile_search_cards(
+    payload: dict,
+    *,
+    keyword: str = "",
+    max_posts: int = 3,
+    max_excerpt_chars: int = 1200,
+) -> WeiboMobileSearchMaterial:
+    if not isinstance(payload, dict) or payload.get("ok") != 1:
+        return WeiboMobileSearchMaterial()
+    cards = payload.get("data", {}).get("cards") if isinstance(payload.get("data"), dict) else None
+    if not isinstance(cards, list):
+        return WeiboMobileSearchMaterial()
+
+    raw_posts = [_post_from_mblog(mblog) for mblog in _iter_mobile_mblogs(cards)]
+    posts = [post for post in raw_posts if post.text]
+    if keyword:
+        keyword_key = _normalize_mobile_keyword(keyword)
+        posts = [post for post in posts if _mobile_post_matches_keyword(post, keyword_key)]
+    posts = [post for post in posts if _is_fresh_mobile_created_at(post.created_at)]
+    posts = _dedupe_mobile_posts(posts)[: max(max_posts, 0)]
+
+    parts: list[str] = []
+    for post in posts:
+        prefix = f"{post.author}：" if post.author else ""
+        _append_unique_context_part(parts, f"{prefix}{post.text}")
+
+    cover_image_url = _first_mobile_cover_url(cards)
+    return WeiboMobileSearchMaterial(
+        source_excerpt=_truncate_context("\n\n".join(parts), max_excerpt_chars),
+        cover_image_url=cover_image_url,
+        realtime_posts=tuple(posts),
+    )
+
+
 def parse_weibo_official_detail_material(html: str, *, max_excerpt_chars: int = 1200) -> WeiboOfficialDetailMaterial:
     return WeiboOfficialDetailMaterial(
         source_excerpt=parse_weibo_official_detail_context(html, max_chars=max_excerpt_chars),
@@ -570,6 +675,186 @@ def _normalize_image_url(url: str) -> str:
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return ""
     return url
+
+
+def _ensure_mobile_guest_cookie(session: requests.Session, timeout: int) -> None:
+    try:
+        response = session.get(WEIBO_MOBILE_HOME_URL, timeout=timeout, headers=WEIBO_MOBILE_HEADERS)
+        response.raise_for_status()
+        logger.info("微博移动端游客 Cookie 探测完成: chars=%s", len(response.text or ""))
+    except Exception as exc:
+        logger.info("微博移动端游客 Cookie 探测失败，继续降级: %s", redact_sensitive_text(exc))
+
+
+def _iter_mobile_mblogs(cards: list) -> list[dict]:
+    result: list[dict] = []
+    for card in cards:
+        if not isinstance(card, dict):
+            continue
+        mblog = card.get("mblog")
+        if isinstance(mblog, dict):
+            result.append(mblog)
+        card_group = card.get("card_group")
+        if isinstance(card_group, list):
+            result.extend(_iter_mobile_mblogs(card_group))
+    return result
+
+
+def _post_from_mblog(mblog: dict) -> WeiboRealtimePost:
+    user = mblog.get("user") if isinstance(mblog.get("user"), dict) else {}
+    text = _clean_mobile_text(str(mblog.get("text") or ""))
+    post_url = _mobile_status_url(mblog)
+    return WeiboRealtimePost(
+        author=str(user.get("screen_name") or "").strip(),
+        created_at=str(mblog.get("created_at") or "").strip(),
+        text=text,
+        reposts=_mobile_count(mblog.get("reposts_count")),
+        comments=_mobile_count(mblog.get("comments_count")),
+        attitudes=_mobile_count(mblog.get("attitudes_count")),
+        url=post_url,
+    )
+
+
+def _mobile_status_url(mblog: dict) -> str:
+    scheme = str(mblog.get("scheme") or "").strip()
+    if scheme.startswith("http"):
+        return scheme
+    bid = str(mblog.get("bid") or mblog.get("id") or "").strip()
+    return f"https://m.weibo.cn/status/{quote(bid)}" if bid else ""
+
+
+def _clean_mobile_text(value: str) -> str:
+    soup = BeautifulSoup(value, "html.parser")
+    text = soup.get_text(" ", strip=True)
+    return _normalize_space(unescape(text))
+
+
+def _mobile_count(value: object) -> int | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    text = str(value).strip().replace(",", "")
+    if text in {"转发", "评论", "赞"}:
+        return None
+    if text.endswith("万"):
+        try:
+            return int(float(text[:-1]) * 10000)
+        except ValueError:
+            return None
+    try:
+        return int(float(text))
+    except ValueError:
+        return None
+
+
+def _dedupe_mobile_posts(posts: list[WeiboRealtimePost]) -> list[WeiboRealtimePost]:
+    seen: set[str] = set()
+    result: list[WeiboRealtimePost] = []
+    for post in posts:
+        key = post.url or post.text
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        result.append(post)
+    return result
+
+
+def _mobile_post_matches_keyword(post: WeiboRealtimePost, keyword_key: str) -> bool:
+    if not keyword_key:
+        return True
+    haystack = _normalize_mobile_keyword(f"{post.author} {post.text}")
+    return keyword_key in haystack
+
+
+def _is_fresh_mobile_created_at(value: str) -> bool:
+    text = _normalize_space(str(value or ""))
+    if not text:
+        return True
+    if any(marker in text for marker in ("刚刚", "分钟前", "小时前", "今天", "昨天")):
+        return True
+
+    day_match = re.search(r"(\d+)\s*天前", text)
+    if day_match:
+        return int(day_match.group(1)) <= WEIBO_MOBILE_FRESHNESS_DAYS
+    week_match = re.search(r"(\d+)\s*周前", text)
+    if week_match:
+        return int(week_match.group(1)) * 7 <= WEIBO_MOBILE_FRESHNESS_DAYS
+    if "月前" in text or "年前" in text:
+        return False
+
+    parsed_date = _parse_mobile_created_date(text)
+    if parsed_date is None:
+        return True
+    today = date.today()
+    if parsed_date > today:
+        parsed_date = parsed_date.replace(year=parsed_date.year - 1)
+    return today - parsed_date <= timedelta(days=WEIBO_MOBILE_FRESHNESS_DAYS)
+
+
+def _parse_mobile_created_date(value: str) -> date | None:
+    match = re.search(r"\d{4}[-/年]\d{1,2}[-/月]\d{1,2}日?", value)
+    if match:
+        normalized = match.group(0).replace("年", "-").replace("月", "-").replace("日", "")
+        normalized = normalized.replace("/", "-")
+        try:
+            return datetime.strptime(normalized, "%Y-%m-%d").date()
+        except ValueError:
+            return None
+
+    match = re.search(r"(?<!\d)(\d{1,2})[-/](\d{1,2})(?!\d)", value)
+    if not match:
+        return None
+    try:
+        return date(date.today().year, int(match.group(1)), int(match.group(2)))
+    except ValueError:
+        return None
+
+
+def _first_mobile_cover_url(cards: list) -> str:
+    for card in cards:
+        if not isinstance(card, dict):
+            continue
+        mblog = card.get("mblog")
+        if isinstance(mblog, dict):
+            url = _cover_from_mblog(mblog)
+            if url:
+                return url
+        card_group = card.get("card_group")
+        if isinstance(card_group, list):
+            url = _first_mobile_cover_url(card_group)
+            if url:
+                return url
+    return ""
+
+
+def _cover_from_mblog(mblog: dict) -> str:
+    page_info = mblog.get("page_info") if isinstance(mblog.get("page_info"), dict) else {}
+    for key in ("page_pic", "page_url"):
+        normalized = _normalize_image_url(str(page_info.get(key) or ""))
+        if normalized:
+            return normalized
+    pics = mblog.get("pics")
+    if isinstance(pics, list):
+        for pic in pics:
+            if not isinstance(pic, dict):
+                continue
+            candidates = [
+                pic.get("url"),
+                pic.get("large", {}).get("url") if isinstance(pic.get("large"), dict) else "",
+                pic.get("geo", {}).get("url") if isinstance(pic.get("geo"), dict) else "",
+            ]
+            for candidate in candidates:
+                normalized = _normalize_image_url(str(candidate or ""))
+                if normalized:
+                    return normalized
+    return ""
+
+
+def _normalize_mobile_keyword(value: str) -> str:
+    return re.sub(r"\s+", "", _normalize_topic_title(value)).lower()
 
 
 def _extract_detail_title(anchor: Tag) -> str:

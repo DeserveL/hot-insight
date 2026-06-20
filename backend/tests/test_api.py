@@ -54,6 +54,7 @@ class ApiTests(unittest.TestCase):
             self.assertEqual(topics.json()["items"][0]["peak_tag"], "爆")
             self.assertEqual(topics.json()["items"][0]["best_rank"], 1)
             self.assertEqual(topics.json()["items"][0]["peak_score"], 100)
+            self.assertIn("m.weibo.cn/search", topics.json()["items"][0]["mobile_url"])
             self.assertEqual(detail.status_code, 200)
             self.assertEqual(detail.json()["peak_tag"], "爆")
             self.assertEqual(detail.json()["best_rank"], 1)

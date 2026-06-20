@@ -143,7 +143,7 @@ class NotificationRouter:
         targets: list[tuple[str, str]] | None = None,
     ) -> list[DeliveryResult]:
         target_set = set(targets or [target.as_tuple() for target in self.delivery_targets()])
-        detail_url = topic_detail_url(self.public_site_url, topic.id) or topic.url
+        detail_url = topic_detail_url(self.public_site_url, topic.id)
         results: list[DeliveryResult] = []
         for provider in self.providers:
             provider_target = (provider.provider, provider.target)

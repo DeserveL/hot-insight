@@ -63,7 +63,8 @@ class AIDetailConfig:
     max_retries: int = 3
     timeout_seconds: int = 60
     temperature: float = 0.2
-    web_search_options: dict[str, Any] | None = field(default_factory=dict)
+    external_search: str = "off"
+    web_search_options: dict[str, Any] | None = None
     extra_payload: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -86,6 +87,10 @@ class AppConfig:
     weibo_official_visitor_timeout_seconds: int = 15
     weibo_official_realtime_timeout_seconds: int = 15
     weibo_official_max_retries: int = 2
+    weibo_mobile_enabled: bool = True
+    weibo_mobile_timeout_seconds: int = 10
+    weibo_mobile_max_posts: int = 3
+    weibo_mobile_max_retries: int = 2
     weibo_source_order: tuple[str, ...] = DEFAULT_WEIBO_SOURCE_ORDER
     database_path: Path = Path("data/hot_insight.sqlite3")
     log_level: str = "INFO"
@@ -135,6 +140,10 @@ class AppConfig:
                 1,
             ),
             weibo_official_max_retries=max(_int_env("WEIBO_OFFICIAL_MAX_RETRIES", 2), 1),
+            weibo_mobile_enabled=_bool_env("WEIBO_MOBILE_ENABLED", True),
+            weibo_mobile_timeout_seconds=max(_int_env("WEIBO_MOBILE_TIMEOUT_SECONDS", 10), 1),
+            weibo_mobile_max_posts=max(_int_env("WEIBO_MOBILE_MAX_POSTS", 3), 0),
+            weibo_mobile_max_retries=max(_int_env("WEIBO_MOBILE_MAX_RETRIES", 2), 1),
             weibo_source_order=_split_csv(os.getenv("WEIBO_SOURCE_ORDER"), DEFAULT_WEIBO_SOURCE_ORDER),
             database_path=Path(os.getenv("DATABASE_PATH", "data/hot_insight.sqlite3")),
             log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
@@ -188,7 +197,8 @@ def _load_ai_detail_config() -> AIDetailConfig:
         max_retries=max(_int_env("AI_DETAIL_MAX_RETRIES", 3), 1),
         timeout_seconds=max(_int_env("AI_DETAIL_TIMEOUT_SECONDS", 60), 1),
         temperature=_float_env("AI_DETAIL_TEMPERATURE", 0.2),
-        web_search_options=_json_env("AI_DETAIL_WEB_SEARCH_OPTIONS", {}),
+        external_search=_external_search_env(os.getenv("AI_DETAIL_EXTERNAL_SEARCH", "off")),
+        web_search_options=_json_env("AI_DETAIL_WEB_SEARCH_OPTIONS", None),
         extra_payload=_json_env("AI_DETAIL_EXTRA_PAYLOAD_JSON", {}) or {},
     )
 
@@ -277,3 +287,10 @@ def _json_env(name: str, default: dict[str, Any] | None) -> dict[str, Any] | Non
     if not isinstance(parsed, dict):
         raise ValueError(f"{name} must be a JSON object or empty string")
     return parsed
+
+
+def _external_search_env(value: str | None) -> str:
+    normalized = (value or "off").strip().lower() or "off"
+    if normalized not in {"off", "optional", "required"}:
+        return "off"
+    return normalized

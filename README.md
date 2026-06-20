@@ -8,7 +8,7 @@ hot-insight 是一个个人热点洞察站，用于追踪微博热搜，结合 A
 
 - 微博热搜追踪：默认优先使用微博官方公开页面，按热搜标识筛选重点话题，展示标题、排名、热度和更新时间。
 - 展示与通知分离：网站可展示 `爆`、`沸`、`热`，通知可只推送更重要的 `爆`、`沸`。
-- AI 辅助洞察：为热点生成一句话结论、内容梳理、关键事实、AI 评价、风险提示和参考来源。
+- AI 辅助洞察：基于微博实时材料生成一句话结论、内容梳理、关键事实、AI 评价、风险提示和参考来源。
 - 网站详情页：每个热点都有独立详情页，便于阅读和分享。
 - 多渠道通知：支持企业微信应用消息和 Telegram 频道推送。
 - 维护告警：支持通过企业微信群机器人接收采集异常提醒。
@@ -19,7 +19,7 @@ hot-insight 是一个个人热点洞察站，用于追踪微博热搜，结合 A
 
 - 首页：展示最新热点和重点洞察。
 - 微博热搜：按标识浏览微博热点列表。
-- 热点详情：展示微博来源摘要、AI 洞察、关键事实、风险提示和参考来源。
+- 热点详情：展示微博实时材料、AI 洞察、关键事实、风险提示和参考来源。
 - 关于：说明数据来源、AI 辅助内容和通知订阅能力。
 
 ## 技术栈
@@ -108,6 +108,10 @@ http://localhost:3000
 | `WEIBO_OFFICIAL_VISITOR_TIMEOUT_SECONDS` | 微博游客初始化请求超时时间，单位秒 | `15` |
 | `WEIBO_OFFICIAL_REALTIME_TIMEOUT_SECONDS` | 微博官方详情映射页请求超时时间，单位秒 | `15` |
 | `WEIBO_OFFICIAL_MAX_RETRIES` | 微博官方热榜页失败后的最大尝试次数 | `2` |
+| `WEIBO_MOBILE_ENABLED` | 是否启用微博移动端词页增强，用于补充实时博文 | `true` |
+| `WEIBO_MOBILE_TIMEOUT_SECONDS` | 微博移动端词页请求超时时间，单位秒 | `10` |
+| `WEIBO_MOBILE_MAX_POSTS` | 每个热点最多保留的实时博文条数 | `3` |
+| `WEIBO_MOBILE_MAX_RETRIES` | 微博移动端词页失败后的最大尝试次数 | `2` |
 | `SCHEDULE_MINUTES` | 自动更新间隔，单位分钟 | `30` |
 | `APP_TIME_ZONE` | 后端日志、数据时间和页面展示使用的时区 | `Asia/Shanghai` |
 | `MAX_TOPICS_PER_RUN` | 单次最多处理热点数 | `10` |
@@ -154,11 +158,12 @@ AI_DETAIL_BASE_URL=https://your-api.example.com/v1
 AI_DETAIL_API_KEY=
 AI_DETAIL_MODEL=
 AI_DETAIL_API_MODE=responses
-AI_DETAIL_WEB_SEARCH_OPTIONS={}
+AI_DETAIL_EXTERNAL_SEARCH=off
+AI_DETAIL_WEB_SEARCH_OPTIONS=
 AI_DETAIL_EXTRA_PAYLOAD_JSON={}
 ```
 
-AI 洞察推荐使用支持 Responses API 与 `web_search` 的 OpenAI 兼容接口，以便生成包含来源链接的内容。若服务商只支持 Chat Completions，可将 `AI_DETAIL_API_MODE` 改为 `chat_completions`，并选择该服务商提供的搜索模型或搜索参数。
+AI 洞察默认以微博官方详情和微博移动端实时词页为主要材料，不强制联网搜索。`AI_DETAIL_EXTERNAL_SEARCH` 可设为 `optional` 或 `required` 作为外部核验辅助；若服务商只支持 Chat Completions，可将 `AI_DETAIL_API_MODE` 改为 `chat_completions`，并按服务商要求配置 `AI_DETAIL_WEB_SEARCH_OPTIONS`。
 
 ## Docker 部署
 

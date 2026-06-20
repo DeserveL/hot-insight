@@ -4,6 +4,8 @@ import { notFound } from "next/navigation";
 import { ArrowLeft, ExternalLink } from "lucide-react";
 
 import { BentoCard } from "@/components/ui/bento-card";
+import { HeatTrend } from "@/components/heat-trend";
+import { RealtimePosts } from "@/components/realtime-posts";
 import { TagBadge } from "@/components/ui/tag-badge";
 import { getPublicSiteUrl, getTopic } from "@/lib/api";
 import type { Topic } from "@/lib/types";
@@ -47,6 +49,9 @@ export default async function TopicDetailPage({ params }: { params: Promise<{ id
   const peakTag = topic.peak_tag || topic.tag;
   const bestRank = topic.best_rank ?? topic.rank;
   const peakScore = topic.peak_score ?? topic.score;
+  const mobileUrl = topic.mobile_url || "";
+  const sourceUrl = getPreferredSourceUrl(topic);
+  const takeaway = topic.ai_detail?.takeaway || "";
 
   return (
     <main className="mx-auto max-w-6xl bg-surface px-5 py-12 sm:px-6 lg:py-16">
@@ -78,6 +83,12 @@ export default async function TopicDetailPage({ params }: { params: Promise<{ id
             {topic.title}
           </h1>
 
+          {takeaway ? (
+            <p className="mt-7 text-2xl font-semibold leading-relaxed tracking-tight text-[#1D1D1F] sm:text-3xl">
+              {takeaway}
+            </p>
+          ) : null}
+
           {coverImageUrl ? (
             <div className="mt-10 overflow-hidden rounded-2xl bg-white shadow-apple sm:rounded-3xl">
               {/* eslint-disable-next-line @next/next/no-img-element -- 微博图片走同源代理，避免浏览器直连触发防盗链。 */}
@@ -89,7 +100,12 @@ export default async function TopicDetailPage({ params }: { params: Promise<{ id
             </div>
           ) : null}
 
-          <SourceMaterialView topic={topic} />
+          <RealtimePosts
+            posts={topic.realtime_posts || []}
+            sourceExcerpt={topic.source_excerpt}
+            sourceUrl={sourceUrl}
+            mobileUrl={mobileUrl}
+          />
           {topic.ai_detail ? <AIDetailView topic={topic} /> : <AIFallback />}
         </article>
 
@@ -105,9 +121,12 @@ export default async function TopicDetailPage({ params }: { params: Promise<{ id
               <Info name="在榜时长" value={formatDurationBetween(topic.first_seen_at, topic.last_seen_at)} />
               <Info name="观测轮次" value={`已观测 ${topic.seen_count} 轮`} />
             </div>
+            <div className="mt-7">
+              <HeatTrend observations={topic.observations || []} />
+            </div>
             <div className="mt-8 flex flex-col gap-3">
               <a
-                href={topic.url}
+                href={sourceUrl}
                 target="_blank"
                 rel="noreferrer"
                 className="inline-flex h-11 items-center justify-center gap-2 rounded-full bg-[#1D1D1F] px-4 text-sm font-semibold text-white shadow-apple transition-all duration-300 ease-out hover:scale-[1.01] hover:bg-black hover:shadow-apple-lg"
@@ -138,6 +157,28 @@ function Info({ name, value }: { name: string; value: string }) {
   );
 }
 
+function getPreferredSourceUrl(topic: Topic) {
+  if (isWeiboOfficialHotDetailUrl(topic.url)) {
+    return topic.url;
+  }
+  return topic.mobile_url || topic.url;
+}
+
+function isWeiboOfficialHotDetailUrl(value: string) {
+  try {
+    const url = new URL(value);
+    return (
+      url.protocol === "https:" &&
+      url.hostname === "weibo.com" &&
+      url.pathname.startsWith("/a/hot/") &&
+      !url.pathname.startsWith("/a/hot/realtime/") &&
+      url.pathname.endsWith(".html")
+    );
+  } catch {
+    return false;
+  }
+}
+
 function formatPeakStatus(topic: Topic) {
   const tag = topic.peak_tag || topic.tag || "无标识";
   const rank = topic.best_rank ?? topic.rank;
@@ -157,9 +198,10 @@ function AIDetailView({ topic }: { topic: Topic }) {
   }
   return (
     <div className="mt-12">
-      <Section title="一句话结论" featured>
-        <p>{detail.takeaway || "值得继续关注该热点后续进展。"}</p>
-      </Section>
+      <div className="mb-2">
+        <h2 className="text-xs font-bold uppercase tracking-[0.24em] text-[#A1A1A6]">AI 洞察</h2>
+        <p className="mt-3 text-sm font-medium leading-relaxed text-[#86868B]">由 AI 基于以上实时内容整理，仅供参考</p>
+      </div>
       <Section title="热点梳理">
         <p>{detail.summary}</p>
       </Section>
@@ -180,8 +222,8 @@ function AIDetailView({ topic }: { topic: Topic }) {
         <p>{detail.risk_note || "未能确认"}</p>
         <div className="mt-5 text-sm font-semibold text-[#86868B]">可信度：{confidenceLabel(detail.confidence)}</div>
       </Section>
-      <Section title="参考来源">
-        {detail.sources.length ? (
+      {detail.sources.length ? (
+        <Section title="参考来源">
           <ul className="space-y-3">
             {detail.sources.map((source) => (
               <li key={`${source.title}-${source.url}`}>
@@ -197,10 +239,8 @@ function AIDetailView({ topic }: { topic: Topic }) {
               </li>
             ))}
           </ul>
-        ) : (
-          <p>未能确认可靠来源链接</p>
-        )}
-      </Section>
+        </Section>
+      ) : null}
     </div>
   );
 }
@@ -213,32 +253,11 @@ function AIFallback() {
   );
 }
 
-function SourceMaterialView({ topic }: { topic: Topic }) {
-  const paragraphs = splitSourceExcerpt(topic.source_excerpt);
-  return (
-    <Section title="微博来源摘要">
-      <div className="space-y-5">
-        {paragraphs.map((paragraph) => (
-          <p key={paragraph}>{paragraph}</p>
-        ))}
-      </div>
-    </Section>
-  );
-}
-
-function Section({ title, children, featured = false }: { title: string; children: ReactNode; featured?: boolean }) {
+function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section className="border-b border-gray-200/60 py-10 first:border-t">
       <h2 className="text-xs font-bold uppercase tracking-[0.24em] text-[#A1A1A6]">{title}</h2>
-      <div
-        className={
-          featured
-            ? "mt-5 text-2xl font-semibold leading-relaxed tracking-tight text-[#1D1D1F] sm:text-3xl"
-            : "mt-5 text-lg leading-relaxed text-[#424245]"
-        }
-      >
-        {children}
-      </div>
+      <div className="mt-5 text-lg leading-relaxed text-[#424245]">{children}</div>
     </section>
   );
 }
@@ -288,53 +307,4 @@ function isSinaImgUrl(value: string | null | undefined): value is string {
   } catch {
     return false;
   }
-}
-
-function splitSourceExcerpt(value: string | null | undefined) {
-  const fallback = "微博公开来源暂未提供更多摘要，可通过微博来源继续查看。";
-  const text = (value || "").replace(/\r\n/g, "\n").trim();
-  if (!text) {
-    return [fallback];
-  }
-
-  const explicitParagraphs = text
-    .split(/\n+/)
-    .map((paragraph) => paragraph.trim())
-    .filter(Boolean);
-  const paragraphs = explicitParagraphs.length > 1 ? explicitParagraphs : splitLongSourceText(text);
-  return Array.from(new Set(paragraphs.map((paragraph) => paragraph.trim()).filter(Boolean))).slice(0, 6);
-}
-
-function splitLongSourceText(text: string) {
-  if (text.length <= 140) {
-    return [text];
-  }
-
-  const sentences = text.match(/[^。！？!?]+[。！？!?]?/g)?.map((sentence) => sentence.trim()).filter(Boolean) || [];
-  if (!sentences.length) {
-    return chunkText(text, 140);
-  }
-
-  const paragraphs: string[] = [];
-  let current = "";
-  for (const sentence of sentences) {
-    if (current && current.length + sentence.length > 150) {
-      paragraphs.push(current);
-      current = sentence;
-      continue;
-    }
-    current = `${current}${sentence}`;
-  }
-  if (current) {
-    paragraphs.push(current);
-  }
-  return paragraphs;
-}
-
-function chunkText(text: string, size: number) {
-  const chunks: string[] = [];
-  for (let index = 0; index < text.length; index += size) {
-    chunks.push(text.slice(index, index + size));
-  }
-  return chunks;
 }

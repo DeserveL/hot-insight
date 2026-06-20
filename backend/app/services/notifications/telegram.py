@@ -11,7 +11,7 @@ import requests
 
 from backend.app.core.config import TelegramConfig
 from backend.app.core.logging import redact_sensitive_text
-from backend.app.domain.models import AIDetail, TopicCandidate
+from backend.app.domain.models import AIDetail, TopicCandidate, weibo_mobile_search_url
 from backend.app.services.notifications.renderers import (
     compact_text,
     confidence_label,
@@ -75,7 +75,8 @@ class TelegramNotifier:
             return TelegramSendResult(False, "Telegram 未配置")
 
         caption = render_telegram_caption(topic, ai_detail, ai_error)
-        reply_markup = build_reply_markup(detail_url or topic.url, topic.url)
+        source_url = weibo_mobile_search_url(topic.title) or topic.url
+        reply_markup = build_reply_markup(detail_url, source_url)
         if not topic.cover_image_url:
             return self._send_message(caption, reply_markup)
 
@@ -197,6 +198,14 @@ def render_telegram_caption(
         )
     else:
         lines.extend(["", html.escape(user_visible_ai_error(ai_error))])
+    if topic.source_excerpt.strip():
+        lines.extend(
+            [
+                "",
+                "<b>微博实时材料</b>",
+                html.escape(compact_text(topic.source_excerpt, 140)),
+            ]
+        )
     return _truncate("\n".join(lines), TELEGRAM_CAPTION_LIMIT)
 
 

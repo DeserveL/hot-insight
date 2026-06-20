@@ -30,10 +30,52 @@ def weibo_search_url(title: str) -> str:
     return f"https://s.weibo.com/weibo?q={quote(title)}"
 
 
+def weibo_mobile_search_url(title: str) -> str:
+    clean_title = _strip_hashtag(str(title or "").strip())
+    container_id = f"100103type=1&q={clean_title}"
+    return f"https://m.weibo.cn/search?containerid={quote(container_id, safe='')}"
+
+
 def topic_detail_url(public_site_url: str, topic_id: str) -> str:
     if not public_site_url:
         return ""
     return f"{public_site_url.rstrip('/')}/topics/{quote(topic_id)}"
+
+
+@dataclass(frozen=True)
+class WeiboRealtimePost:
+    author: str
+    created_at: str
+    text: str
+    reposts: int | None = None
+    comments: int | None = None
+    attitudes: int | None = None
+    url: str = ""
+
+    @classmethod
+    def from_raw(cls, data: Any) -> "WeiboRealtimePost":
+        if not isinstance(data, dict):
+            return cls(author="", created_at="", text="")
+        return cls(
+            author=str(data.get("author") or "").strip(),
+            created_at=str(data.get("created_at") or "").strip(),
+            text=str(data.get("text") or "").strip(),
+            reposts=_to_int(data.get("reposts")),
+            comments=_to_int(data.get("comments")),
+            attitudes=_to_int(data.get("attitudes")),
+            url=str(data.get("url") or "").strip(),
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            "author": self.author,
+            "created_at": self.created_at,
+            "text": self.text,
+            "reposts": self.reposts,
+            "comments": self.comments,
+            "attitudes": self.attitudes,
+            "url": self.url,
+        }
 
 
 @dataclass(frozen=True)
@@ -52,6 +94,10 @@ class TopicCandidate:
     recurrence_window_hours: int | None = None
     source_excerpt: str = ""
     cover_image_url: str = ""
+    realtime_posts: tuple[WeiboRealtimePost, ...] = ()
+    source_excerpt_origin: str = ""
+    official_context: str = ""
+    mobile_context: str = ""
 
     @property
     def id(self) -> str:
@@ -79,11 +125,24 @@ class TopicCandidate:
             recurrence_window_hours=recurrence_window_hours,
         )
 
-    def with_source_material(self, *, source_excerpt: str = "", cover_image_url: str = "") -> "TopicCandidate":
+    def with_source_material(
+        self,
+        *,
+        source_excerpt: str = "",
+        cover_image_url: str = "",
+        realtime_posts: tuple[WeiboRealtimePost, ...] | list[WeiboRealtimePost] = (),
+        source_excerpt_origin: str = "",
+        official_context: str = "",
+        mobile_context: str = "",
+    ) -> "TopicCandidate":
         return replace(
             self,
             source_excerpt=source_excerpt.strip(),
             cover_image_url=cover_image_url.strip(),
+            realtime_posts=tuple(realtime_posts),
+            source_excerpt_origin=source_excerpt_origin.strip(),
+            official_context=official_context.strip(),
+            mobile_context=mobile_context.strip(),
         )
 
     @classmethod
@@ -100,9 +159,15 @@ class TopicCandidate:
         channel_id: str = WEIBO_CHANNEL_ID,
         source_excerpt: Any = "",
         cover_image_url: Any = "",
+        realtime_posts: Any = (),
     ) -> "TopicCandidate":
         clean_title = str(title or "").strip()
         fallback_url = weibo_search_url(clean_title) if channel_id == WEIBO_CHANNEL_ID else ""
+        posts = tuple(
+            post
+            for post in (WeiboRealtimePost.from_raw(item) for item in realtime_posts)
+            if post.text or post.author or post.url
+        ) if isinstance(realtime_posts, list) else ()
         return cls(
             title=clean_title,
             rank=_to_int(rank),
@@ -114,6 +179,7 @@ class TopicCandidate:
             channel_id=channel_id,
             source_excerpt=str(source_excerpt or "").strip(),
             cover_image_url=str(cover_image_url or "").strip(),
+            realtime_posts=posts,
         )
 
 
@@ -201,3 +267,10 @@ def _to_int(value: Any) -> int | None:
         return int(float(text))
     except ValueError:
         return None
+
+
+def _strip_hashtag(value: str) -> str:
+    normalized = str(value or "").strip()
+    if len(normalized) > 2 and normalized.startswith("#") and normalized.endswith("#"):
+        return normalized[1:-1].strip()
+    return normalized

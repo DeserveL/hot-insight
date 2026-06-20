@@ -1,4 +1,5 @@
-import { ArrowUpRight, Menu, Sparkles } from "lucide-react";
+import { ArrowUpRight, Menu } from "lucide-react";
+import Image from "next/image";
 import Link from "next/link";
 
 const navItems = [
@@ -12,8 +13,16 @@ export function SiteHeader() {
     <header className="sticky top-0 z-40 bg-white/70 backdrop-blur-xl">
       <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-5 sm:px-6">
         <Link href="/" className="flex min-w-0 items-center gap-2.5 font-semibold text-[#1D1D1F]">
-          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#1D1D1F] text-white shadow-apple">
-            <Sparkles className="h-4 w-4" aria-hidden="true" />
+          <span className="flex h-8 w-8 shrink-0 overflow-hidden rounded-full bg-white shadow-apple ring-1 ring-black/5">
+            <Image
+              src="/brand-icon.png"
+              alt=""
+              width={32}
+              height={32}
+              aria-hidden="true"
+              className="h-8 w-8 object-cover"
+              priority
+            />
           </span>
           <span className="truncate tracking-tight">热点洞察</span>
         </Link>

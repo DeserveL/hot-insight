@@ -149,8 +149,13 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.ai_detail.max_retries, 3)
         self.assertEqual(config.ai_detail.timeout_seconds, 60)
         self.assertEqual(config.ai_detail.temperature, 0.2)
-        self.assertEqual(config.ai_detail.web_search_options, {})
+        self.assertEqual(config.ai_detail.external_search, "off")
+        self.assertIsNone(config.ai_detail.web_search_options)
         self.assertEqual(config.ai_detail.extra_payload, {})
+        self.assertTrue(config.weibo_mobile_enabled)
+        self.assertEqual(config.weibo_mobile_timeout_seconds, 10)
+        self.assertEqual(config.weibo_mobile_max_posts, 3)
+        self.assertEqual(config.weibo_mobile_max_retries, 2)
 
     def test_ai_detail_extra_payload_is_configurable(self) -> None:
         with patch.dict(os.environ, {"AI_DETAIL_EXTRA_PAYLOAD_JSON": '{"metadata":{"search":true}}'}, clear=True):
@@ -180,6 +185,30 @@ class ConfigTests(unittest.TestCase):
             config = AppConfig.from_env(env_file=None)
 
         self.assertIsNone(config.ai_detail.web_search_options)
+
+    def test_ai_detail_external_search_is_configurable(self) -> None:
+        with patch.dict(os.environ, {"AI_DETAIL_EXTERNAL_SEARCH": "optional"}, clear=True):
+            config = AppConfig.from_env(env_file=None)
+
+        self.assertEqual(config.ai_detail.external_search, "optional")
+
+    def test_weibo_mobile_options_are_configurable(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "WEIBO_MOBILE_ENABLED": "false",
+                "WEIBO_MOBILE_TIMEOUT_SECONDS": "6",
+                "WEIBO_MOBILE_MAX_POSTS": "5",
+                "WEIBO_MOBILE_MAX_RETRIES": "3",
+            },
+            clear=True,
+        ):
+            config = AppConfig.from_env(env_file=None)
+
+        self.assertFalse(config.weibo_mobile_enabled)
+        self.assertEqual(config.weibo_mobile_timeout_seconds, 6)
+        self.assertEqual(config.weibo_mobile_max_posts, 5)
+        self.assertEqual(config.weibo_mobile_max_retries, 3)
 
 
 if __name__ == "__main__":

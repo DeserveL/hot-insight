@@ -4,7 +4,7 @@ from pathlib import Path
 
 from backend.app.core.config import TelegramConfig
 from backend.app.db.repositories import AppRepository
-from backend.app.domain.models import AIDetail, TopicCandidate
+from backend.app.domain.models import AIDetail, TopicCandidate, weibo_mobile_search_url
 from backend.app.services.notifications.telegram import (
     TelegramNotifier,
     build_reply_markup,
@@ -69,6 +69,12 @@ class TelegramTests(unittest.TestCase):
         self.assertNotIn("参考来源", caption)
         self.assertNotIn("weibo_official", caption)
 
+    def test_caption_contains_source_excerpt_when_available(self) -> None:
+        caption = render_telegram_caption(_topic("爆点新闻", "爆", source_excerpt="微博实时材料内容。"))
+
+        self.assertIn("微博实时材料", caption)
+        self.assertIn("微博实时材料内容。", caption)
+
     def test_caption_truncates_long_summary_and_risk_but_keeps_sections(self) -> None:
         caption = render_telegram_caption(
             _topic("长文本热点", "热", source_id="weibo_official"),
@@ -116,6 +122,10 @@ class TelegramTests(unittest.TestCase):
             self.assertFalse(session.posts[0]["has_files"])
             self.assertEqual(session.posts[0]["json"]["photo"], topic.cover_image_url)
             self.assertIn("reply_markup", session.posts[0]["json"])
+            self.assertEqual(
+                session.posts[0]["json"]["reply_markup"]["inline_keyboard"][0][1]["url"],
+                weibo_mobile_search_url(topic.title),
+            )
             repository.close()
 
     def test_reuses_cached_file_id_without_upload(self) -> None:
@@ -201,7 +211,14 @@ def _config(max_retries: int = 3) -> TelegramConfig:
     )
 
 
-def _topic(title: str, tag: str, cover_image_url: str = "", *, source_id: str = "test") -> TopicCandidate:
+def _topic(
+    title: str,
+    tag: str,
+    cover_image_url: str = "",
+    *,
+    source_id: str = "test",
+    source_excerpt: str = "",
+) -> TopicCandidate:
     return TopicCandidate(
         title=title,
         rank=1,
@@ -211,6 +228,7 @@ def _topic(title: str, tag: str, cover_image_url: str = "", *, source_id: str = 
         source_id=source_id,
         fetched_at="2026-06-09T18:00:00+08:00",
         cover_image_url=cover_image_url,
+        source_excerpt=source_excerpt,
     )
 
 

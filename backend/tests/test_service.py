@@ -79,8 +79,23 @@ class FakeAIDetailClient:
         self.error_message = "fake ai disabled"
 
     def prepare_context(self, topic: TopicCandidate) -> AIContext:
-        official_context = topic.source_excerpt
-        return AIContext(official_context=official_context, context_hash=build_context_hash(topic, official_context))
+        official_context = topic.official_context or (
+            topic.source_excerpt if topic.source_excerpt_origin == "official" else ""
+        )
+        mobile_context = topic.mobile_context or (
+            topic.source_excerpt if topic.source_excerpt and topic.source_excerpt_origin != "official" else ""
+        )
+        return AIContext(
+            official_context=official_context,
+            mobile_context=mobile_context,
+            realtime_posts=topic.realtime_posts,
+            combined_context=official_context or mobile_context,
+            context_hash=build_context_hash(
+                topic,
+                official_context,
+                has_mobile_context=bool(mobile_context or topic.realtime_posts),
+            ),
+        )
 
     def generate(self, topic: TopicCandidate, context: AIContext | None = None):
         self.calls.append(topic)
@@ -479,7 +494,10 @@ class ServiceTests(unittest.TestCase):
             )
             ai_client = FakeAIDetailClient()
             ai_client.detail = _detail()
-            enriched_topic = topic.with_source_material(source_excerpt="微博官方详情补充内容")
+            enriched_topic = topic.with_source_material(
+                source_excerpt="微博官方详情补充内容",
+                source_excerpt_origin="official",
+            )
 
             result = _generate_ai_detail_if_missing(config, repository, ai_client, enriched_topic)
 
@@ -487,6 +505,47 @@ class ServiceTests(unittest.TestCase):
             self.assertEqual([topic.title for topic in ai_client.calls], ["爆点新闻"])
             record = repository.get_ai_insight_record(topic.id)
             self.assertEqual(record["context_hash"], build_context_hash(enriched_topic, enriched_topic.source_excerpt))
+            repository.close()
+
+    def test_failed_ai_cache_with_weibo_material_retries_once_per_context(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = _config(temp_dir)
+            repository = AppRepository(config.database_path)
+            topic = _topic("爆点新闻", "爆").with_source_material(
+                source_excerpt="移动端实时材料",
+                source_excerpt_origin="mobile",
+            )
+            stored_topic = repository.save_topics([topic])[0]
+            context_hash = build_context_hash(stored_topic, "", has_mobile_context=True)
+            repository.save_ai_insight_failure(
+                stored_topic,
+                "network down",
+                "test-model",
+                prompt_version=PROMPT_VERSION,
+                api_mode="responses",
+                context_hash=context_hash,
+            )
+            ai_client = FakeAIDetailClient()
+
+            first = _generate_ai_detail_if_missing(config, repository, ai_client, stored_topic)
+            second = _generate_ai_detail_if_missing(config, repository, ai_client, stored_topic)
+            record = repository.get_ai_insight_record(stored_topic.id)
+            official_topic = stored_topic.with_source_material(
+                source_excerpt="微博官方详情补充内容",
+                source_excerpt_origin="official",
+                official_context="微博官方详情补充内容",
+            )
+            third = _generate_ai_detail_if_missing(config, repository, ai_client, official_topic)
+            updated_record = repository.get_ai_insight_record(stored_topic.id)
+
+            self.assertEqual(first, "failed")
+            self.assertEqual(second, "skipped")
+            self.assertEqual(third, "failed")
+            self.assertEqual([topic.title for topic in ai_client.calls], ["爆点新闻", "爆点新闻"])
+            self.assertEqual(record["failed_retry_context_hash"], context_hash)
+            self.assertEqual(record["context_hash"], context_hash)
+            self.assertEqual(updated_record["failed_retry_context_hash"], "")
+            self.assertNotEqual(updated_record["context_hash"], context_hash)
             repository.close()
 
 
@@ -500,6 +559,7 @@ def _config(
     health_alert_cooldown_minutes: int = 180,
     health_alerts: bool = True,
     health_webhook_url: str = "",
+    weibo_mobile_enabled: bool = False,
 ) -> AppConfig:
     return AppConfig(
         alert_tags=alert_tags,
@@ -508,6 +568,7 @@ def _config(
         weibo_source_order=source_order,
         database_path=Path(temp_dir) / "hot_insight.sqlite3",
         ai_detail=AIDetailConfig(enabled=True, model="test-model"),
+        weibo_mobile_enabled=weibo_mobile_enabled,
         wecom=WeComConfig(health_alerts=health_alerts, health_webhook_url=health_webhook_url),
         health_alert_cooldown_minutes=health_alert_cooldown_minutes,
     )

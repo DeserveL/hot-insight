@@ -13,8 +13,9 @@ import requests
 
 from backend.app.core.config import AIDetailConfig
 from backend.app.core.logging import redact_sensitive_text
-from backend.app.domain.models import AIDetail, AIDetailSource, TopicCandidate
+from backend.app.domain.models import AIDetail, AIDetailSource, TopicCandidate, WeiboRealtimePost, weibo_mobile_search_url
 from backend.app.services.ai.prompts import PROMPT_VERSION, SYSTEM_PROMPT
+from backend.app.services.ai.sanitizer import sanitize_public_risk_note
 from backend.app.services.ingestion.weibo_official import fetch_weibo_official_detail_context
 
 logger = logging.getLogger(__name__)
@@ -30,26 +31,13 @@ PROTECTED_EXTRA_PAYLOAD_KEYS = {
     "include",
     "stream",
 }
-TECHNICAL_RISK_TERMS = (
-    "搜索工具",
-    "实时搜索工具",
-    "联网工具",
-    "联网能力",
-    "当前环境",
-    "API",
-    "api",
-    "模型",
-    "web_search",
-    "web_search_options",
-    "提示词",
-)
-GENERIC_RISK_NOTE = "相关信息仍需以当事方、权威媒体或平台后续公开说明为准，注意区分事实、观点和未经证实的传播内容。"
-
-
 @dataclass(frozen=True)
 class AIContext:
     official_context: str
     context_hash: str
+    mobile_context: str = ""
+    realtime_posts: tuple[WeiboRealtimePost, ...] = ()
+    combined_context: str = ""
 
 
 @dataclass(frozen=True)
@@ -80,10 +68,17 @@ class AIDetailClient:
         self.session = session or requests.Session()
 
     def prepare_context(self, topic: TopicCandidate) -> AIContext:
-        official_context = self._load_official_context(topic)
+        official_context, mobile_context, realtime_posts = self._load_weibo_context(topic)
         return AIContext(
             official_context=official_context,
-            context_hash=build_context_hash(topic, official_context),
+            mobile_context=mobile_context,
+            realtime_posts=realtime_posts,
+            combined_context=combine_weibo_context(official_context, mobile_context, realtime_posts),
+            context_hash=build_context_hash(
+                topic,
+                official_context,
+                has_mobile_context=bool(mobile_context or realtime_posts),
+            ),
         )
 
     def generate(self, topic: TopicCandidate, context: AIContext | None = None) -> AIDetailResult:
@@ -114,7 +109,7 @@ class AIDetailClient:
         logger.info(
             (
                 "AI 调用准备完成: topic_id=%s title=%s model=%s api_mode=%s base_host=%s "
-                "prompt_version=%s context_hash=%s official_context_chars=%s max_retries=%s timeout_seconds=%s"
+                "prompt_version=%s context_hash=%s official_chars=%s mobile_chars=%s posts=%s max_retries=%s timeout_seconds=%s"
             ),
             topic.id,
             topic.title,
@@ -124,10 +119,12 @@ class AIDetailClient:
             PROMPT_VERSION,
             ai_context.context_hash[:12],
             len(ai_context.official_context),
+            len(ai_context.mobile_context),
+            len(ai_context.realtime_posts),
             self.config.max_retries,
             self.config.timeout_seconds,
         )
-        if self.config.api_mode == "chat_completions" and self.config.web_search_options is not None:
+        if self.config.api_mode == "chat_completions" and self.config.external_search != "off":
             logger.warning(
                 "AI Chat Completions 搜索不保证触发: topic_id=%s model=%s suggestion=gpt-5-search-api_or_responses",
                 topic.id,
@@ -137,8 +134,8 @@ class AIDetailClient:
             "AI 请求配置摘要: topic_id=%s api_mode=%s tool_choice=%s search_options_sent=%s extra_payload_keys=%s",
             topic.id,
             self.config.api_mode,
-            "required" if self.config.api_mode == "responses" else "-",
-            self.config.api_mode == "chat_completions" and self.config.web_search_options is not None,
+            self._tool_choice_label(),
+            self.config.api_mode == "chat_completions" and self.config.external_search != "off",
             ",".join(sorted(self.config.extra_payload.keys())) if self.config.extra_payload else "无",
         )
 
@@ -161,11 +158,11 @@ class AIDetailClient:
                         "Authorization": f"Bearer {self.config.api_key}",
                         "Content-Type": "application/json",
                     },
-                    json=self._build_payload(topic, ai_context.official_context),
+                    json=self._build_payload(topic, ai_context),
                     timeout=self.config.timeout_seconds,
                 )
                 response.raise_for_status()
-                parsed = self._parse_response(response.json(), ai_context.official_context)
+                parsed = self._parse_response(response.json(), ai_context)
                 logger.info(
                     (
                         "AI 请求成功: topic_id=%s title=%s attempt=%s/%s duration_ms=%.1f "
@@ -222,28 +219,36 @@ class AIDetailClient:
             return f"{self.config.base_url}/responses"
         return f"{self.config.base_url}/chat/completions"
 
-    def _build_payload(self, topic: TopicCandidate, official_context: str = "") -> dict[str, Any]:
+    def _build_payload(self, topic: TopicCandidate, context: AIContext) -> dict[str, Any]:
         if self.config.api_mode == "responses":
             payload: dict[str, Any] = {
                 "model": self.config.model,
                 "instructions": SYSTEM_PROMPT,
-                "input": build_user_prompt(topic, official_context=official_context),
-                "tools": [{"type": "web_search"}],
-                "tool_choice": "required",
-                "include": ["web_search_call.action.sources"],
+                "input": build_user_prompt(topic, context=context),
                 "temperature": self.config.temperature,
             }
+            if self.config.external_search in {"optional", "required"}:
+                payload["tools"] = [{"type": "web_search"}]
+                payload["include"] = ["web_search_call.action.sources"]
+            if self.config.external_search == "required":
+                payload["tool_choice"] = "required"
         else:
             payload = {
                 "model": self.config.model,
                 "messages": [
                     {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": build_user_prompt(topic, official_context=official_context)},
+                    {"role": "user", "content": build_user_prompt(topic, context=context)},
                 ],
                 "temperature": self.config.temperature,
             }
-            if self.config.web_search_options is not None:
-                payload["web_search_options"] = self.config.web_search_options
+            if self.config.external_search in {"optional", "required"}:
+                payload["web_search_options"] = self.config.web_search_options or {}
+                if self.config.external_search == "required":
+                    logger.warning(
+                        "AI Chat Completions 模式无法强制搜索: topic_id=%s model=%s",
+                        topic.id,
+                        self.config.model,
+                    )
 
         for key, value in self.config.extra_payload.items():
             if key in PROTECTED_EXTRA_PAYLOAD_KEYS:
@@ -252,14 +257,15 @@ class AIDetailClient:
             payload[key] = value
         return payload
 
-    def _parse_response(self, payload: dict[str, Any], official_context: str) -> ParsedAIDetail:
+    def _parse_response(self, payload: dict[str, Any], context: AIContext) -> ParsedAIDetail:
         if self.config.api_mode == "responses":
             parsed = parse_responses_detail(payload)
         else:
             parsed = parse_chat_completion_result(payload)
         detail = sanitize_ai_detail(
             parsed.detail,
-            has_official_context=bool(official_context),
+            has_official_context=bool(context.official_context),
+            has_weibo_context=bool(context.combined_context),
             search_source_count=parsed.search_source_count,
         )
         return ParsedAIDetail(
@@ -269,15 +275,24 @@ class AIDetailClient:
             json_source_count=parsed.json_source_count,
         )
 
-    def _load_official_context(self, topic: TopicCandidate) -> str:
-        if topic.source_excerpt:
+    def _load_weibo_context(self, topic: TopicCandidate) -> tuple[str, str, tuple[WeiboRealtimePost, ...]]:
+        official_context = topic.official_context
+        mobile_context = topic.mobile_context
+        if not official_context and not mobile_context and topic.source_excerpt:
+            if topic.source_excerpt_origin == "official":
+                official_context = topic.source_excerpt
+            else:
+                mobile_context = topic.source_excerpt
+        if official_context or mobile_context:
             logger.info(
-                "AI 复用已保存微博官方原始材料: topic_id=%s title=%s chars=%s",
+                "AI 复用已保存微博原始材料: topic_id=%s title=%s official_chars=%s mobile_chars=%s posts=%s",
                 topic.id,
                 topic.title,
-                len(topic.source_excerpt),
+                len(official_context),
+                len(mobile_context),
+                len(topic.realtime_posts),
             )
-            return topic.source_excerpt
+            return official_context, mobile_context, topic.realtime_posts
         timeout = max(1, min(self.config.timeout_seconds, 15))
         started = time.perf_counter()
         try:
@@ -289,7 +304,7 @@ class AIDetailClient:
                 len(context),
                 (time.perf_counter() - started) * 1000,
             )
-            return context
+            return context, "", topic.realtime_posts
         except Exception as exc:
             logger.info(
                 "AI 官方上下文加载失败，继续生成 AI 详情: topic_id=%s title=%s duration_ms=%.1f error=%s",
@@ -298,41 +313,81 @@ class AIDetailClient:
                 (time.perf_counter() - started) * 1000,
                 redact_sensitive_text(exc),
             )
-            return ""
+            return "", "", topic.realtime_posts
+
+    def _tool_choice_label(self) -> str:
+        if self.config.api_mode != "responses" or self.config.external_search == "off":
+            return "-"
+        return "required" if self.config.external_search == "required" else "auto"
 
 
-def build_user_prompt(topic: TopicCandidate, official_context: str = "") -> str:
-    context = {
+def build_user_prompt(topic: TopicCandidate, official_context: str = "", context: AIContext | None = None) -> str:
+    ai_context = context
+    if ai_context is None:
+        ai_context = AIContext(
+            official_context=official_context,
+            context_hash=build_context_hash(topic, official_context),
+            combined_context=official_context,
+        )
+    payload_context = {
         "title": topic.title,
         "tag": topic.tag,
         "rank": topic.rank,
         "score": topic.score,
         "source_url": topic.url,
+        "mobile_url": weibo_mobile_search_url(topic.title),
         "source_id": topic.source_id,
         "channel_id": topic.channel_id,
         "fetched_at": topic.fetched_at,
     }
     if topic.source_excerpt:
-        context["weibo_source_excerpt"] = topic.source_excerpt
-    if official_context:
-        context["official_context"] = official_context
+        payload_context["weibo_source_excerpt"] = topic.source_excerpt
+    payload_context["weibo_context"] = {
+        "official_context": ai_context.official_context,
+        "mobile_context": ai_context.mobile_context,
+        "combined": ai_context.combined_context,
+        "realtime_posts": [post.to_dict() for post in ai_context.realtime_posts],
+    }
     return (
-        "请先搜索精确热搜词，并尽量查找当事方、平台公开说明、主流媒体或可交叉核验来源。"
-        "如果 official_context 非空，它来自微博官方公开详情页，请作为原热搜内容上下文，但仍需用搜索结果交叉核验。"
-        "不要只依据微博搜索页就给出确定结论；无法确认时明确写未能确认。"
+        "请优先阅读 weibo_context 内的微博材料：官方公开详情页优先级最高，"
+        "微博移动端热搜词页和实时帖子用于补充当前讨论现场。"
+        "外部搜索结果只能辅助核验，不得覆盖微博实时材料。无法确认时明确写未能确认。"
+        "输出给用户时严禁出现 JSON key、字段名或上下文变量名，例如 weibo_context、official_context、"
+        "mobile_context、realtime_posts、combined、source_excerpt、context_hash；"
+        "请改写成“微博官方详情”“微博移动端讨论”“实时帖子”等自然中文。"
         "请按 system 指定 JSON schema 返回。\n"
-        + json.dumps(context, ensure_ascii=False, indent=2)
+        + json.dumps(payload_context, ensure_ascii=False, indent=2)
     )
 
 
-def build_context_hash(topic: TopicCandidate, official_context: str = "") -> str:
+def combine_weibo_context(
+    official_context: str = "",
+    mobile_context: str = "",
+    realtime_posts: tuple[WeiboRealtimePost, ...] | list[WeiboRealtimePost] = (),
+) -> str:
+    if official_context.strip():
+        return official_context.strip()
+    if mobile_context.strip():
+        return mobile_context.strip()
+    parts: list[str] = []
+    for post in realtime_posts:
+        prefix = f"{post.author}：" if post.author else ""
+        value = f"{prefix}{post.text}".strip()
+        if value:
+            parts.append(value)
+    return "\n\n".join(parts[:5])
+
+
+def build_context_hash(
+    topic: TopicCandidate,
+    official_context: str = "",
+    *,
+    has_mobile_context: bool = False,
+) -> str:
     payload = {
         "title": topic.title,
-        "tag": topic.tag,
-        "rank": topic.rank,
-        "url": topic.url,
-        "source_excerpt": topic.source_excerpt,
         "official_context": official_context,
+        "has_mobile_context": has_mobile_context,
     }
     raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()
@@ -387,16 +442,16 @@ def sanitize_ai_detail(
     detail: AIDetail,
     *,
     has_official_context: bool = False,
+    has_weibo_context: bool = False,
     search_source_count: int = 0,
 ) -> AIDetail:
-    risk_note = detail.risk_note.strip()
-    if not risk_note or any(term in risk_note for term in TECHNICAL_RISK_TERMS):
-        risk_note = GENERIC_RISK_NOTE
+    risk_note = sanitize_public_risk_note(detail.risk_note)
     takeaway = detail.takeaway.strip() or _fallback_takeaway(detail)
     confidence = normalize_confidence(
         detail.confidence,
         detail.sources,
         has_official_context=has_official_context,
+        has_weibo_context=has_weibo_context,
         search_source_count=search_source_count,
     )
     return AIDetail(
@@ -415,6 +470,7 @@ def normalize_confidence(
     sources: list[AIDetailSource],
     *,
     has_official_context: bool = False,
+    has_weibo_context: bool = False,
     search_source_count: int = 0,
 ) -> str:
     raw = value.strip().lower()
@@ -422,8 +478,14 @@ def normalize_confidence(
         raw = "low"
     reliable_count = sum(1 for source in sources if _is_reliable_source_url(source.url))
     if raw == "high":
-        return "high" if reliable_count >= 2 else "medium" if reliable_count >= 1 or has_official_context else "low"
-    if reliable_count >= 1 or has_official_context or search_source_count >= 1:
+        return (
+            "high"
+            if reliable_count >= 2
+            else "medium"
+            if reliable_count >= 1 or has_official_context or has_weibo_context
+            else "low"
+        )
+    if reliable_count >= 1 or has_official_context or has_weibo_context or search_source_count >= 1:
         return "medium" if raw == "low" else raw
     return "low"
 
@@ -570,7 +632,9 @@ def _is_reliable_source_url(value: str) -> bool:
     path = parsed.path.lower()
     if not host:
         return False
-    if host == "s.weibo.com" or path.startswith("/weibo"):
+    if host in {"s.weibo.com", "m.weibo.cn"}:
+        return False
+    if host == "weibo.com" and path.startswith("/a/hot/"):
         return False
     return True
 

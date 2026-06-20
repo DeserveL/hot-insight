@@ -4,7 +4,7 @@ from pathlib import Path
 
 from backend.app.core.config import WeComConfig
 from backend.app.db.repositories import AppRepository
-from backend.app.domain.models import AIDetail, AIDetailSource, TopicCandidate
+from backend.app.domain.models import AIDetail, AIDetailSource, TopicCandidate, weibo_mobile_search_url
 from backend.app.services.notifications.wecom import (
     WeComNotifier,
     build_mpnews_payload,
@@ -63,7 +63,7 @@ class NotifierTests(unittest.TestCase):
         self.assertEqual(payload["msgtype"], "mpnews")
         self.assertEqual(article["title"], "💥【爆】爆点新闻")
         self.assertEqual(article["thumb_media_id"], "media-1")
-        self.assertEqual(article["content_source_url"], topic.url)
+        self.assertEqual(article["content_source_url"], weibo_mobile_search_url(topic.title))
         self.assertIn("热点来源 · 排名 #1 · 热度 12.0万", article["content"])
         self.assertEqual(article["digest"], "洞察生成中，可先查看微博来源。")
 
@@ -84,7 +84,7 @@ class NotifierTests(unittest.TestCase):
 
         self.assertEqual(article["digest"], "一句话结论。")
         self.assertIn("微博官方热搜 · 排名 #1 · 热度 12.0万", content)
-        self.assertIn("微博来源摘要", content)
+        self.assertIn("微博实时材料", content)
         self.assertIn("微博来源摘要内容。", content)
         self.assertIn("一句话结论", content)
         self.assertIn("这是原热搜内容梳理。", content)

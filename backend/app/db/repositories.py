@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+from dataclasses import replace
 from datetime import datetime, timedelta
 from hashlib import sha1
 from pathlib import Path
@@ -19,7 +20,10 @@ from backend.app.domain.models import (
     make_topic_id,
     normalize_title_key,
     now_iso,
+    weibo_mobile_search_url,
+    WeiboRealtimePost,
 )
+from backend.app.services.ai.sanitizer import sanitize_public_risk_note
 
 DEFAULT_TAG_RECURRENCE_HOURS = {"爆": 12, "沸": 12, "热": 24}
 DEFAULT_RECURRENCE_HOURS = 24
@@ -53,7 +57,11 @@ class AppRepository:
                 "ALTER TABLE topics ADD COLUMN recurrence_window_hours INTEGER NOT NULL DEFAULT 24"
             ),
             "source_excerpt": "ALTER TABLE topics ADD COLUMN source_excerpt TEXT NOT NULL DEFAULT ''",
+            "source_excerpt_origin": (
+                "ALTER TABLE topics ADD COLUMN source_excerpt_origin TEXT NOT NULL DEFAULT ''"
+            ),
             "cover_image_url": "ALTER TABLE topics ADD COLUMN cover_image_url TEXT NOT NULL DEFAULT ''",
+            "realtime_posts_json": "ALTER TABLE topics ADD COLUMN realtime_posts_json TEXT NOT NULL DEFAULT '[]'",
             "peak_tag": "ALTER TABLE topics ADD COLUMN peak_tag TEXT NOT NULL DEFAULT ''",
             "best_rank": "ALTER TABLE topics ADD COLUMN best_rank INTEGER",
             "peak_score": "ALTER TABLE topics ADD COLUMN peak_score INTEGER",
@@ -68,6 +76,9 @@ class AppRepository:
             "prompt_version": "ALTER TABLE ai_insights ADD COLUMN prompt_version TEXT NOT NULL DEFAULT ''",
             "api_mode": "ALTER TABLE ai_insights ADD COLUMN api_mode TEXT NOT NULL DEFAULT ''",
             "context_hash": "ALTER TABLE ai_insights ADD COLUMN context_hash TEXT NOT NULL DEFAULT ''",
+            "failed_retry_context_hash": (
+                "ALTER TABLE ai_insights ADD COLUMN failed_retry_context_hash TEXT NOT NULL DEFAULT ''"
+            ),
             "search_source_count": (
                 "ALTER TABLE ai_insights ADD COLUMN search_source_count INTEGER NOT NULL DEFAULT 0"
             ),
@@ -114,6 +125,10 @@ class AppRepository:
         self.conn.execute("UPDATE topics SET peak_tag = tag WHERE peak_tag = ''")
         self.conn.execute("UPDATE topics SET best_rank = rank WHERE best_rank IS NULL AND rank IS NOT NULL")
         self.conn.execute("UPDATE topics SET peak_score = score WHERE peak_score IS NULL AND score IS NOT NULL")
+        self.conn.execute(
+            "UPDATE topics SET source_excerpt_origin = 'mobile' "
+            "WHERE source_excerpt != '' AND source_excerpt_origin = ''"
+        )
 
     def ensure_channel(self, channel_id: str, name: str) -> None:
         now = now_iso()
@@ -216,14 +231,16 @@ class AppRepository:
             """
             INSERT INTO topics
                 (
-                    id, channel_id, title, title_key, url, source_excerpt, cover_image_url,
+                    id, channel_id, title, title_key, url, source_excerpt, source_excerpt_origin,
+                    cover_image_url, realtime_posts_json,
                     tag, peak_tag, rank, best_rank, score, peak_score, source_id,
                     occurrence_started_at, recurrence_window_hours,
                     first_seen_at, last_seen_at, seen_count
                 )
             VALUES
                 (
-                    :id, :channel_id, :title, :title_key, :url, :source_excerpt, :cover_image_url,
+                    :id, :channel_id, :title, :title_key, :url, :source_excerpt, :source_excerpt_origin,
+                    :cover_image_url, :realtime_posts_json,
                     :tag, :peak_tag, :rank, :best_rank, :score, :peak_score, :source_id,
                     :occurrence_started_at, :recurrence_window_hours,
                     :fetched_at, :fetched_at, 1
@@ -233,12 +250,29 @@ class AppRepository:
                 title_key = excluded.title_key,
                 url = excluded.url,
                 source_excerpt = CASE
-                    WHEN excluded.source_excerpt != '' THEN excluded.source_excerpt
+                    WHEN excluded.source_excerpt != '' AND (
+                        :source_excerpt_origin = 'official' OR topics.source_excerpt = ''
+                    ) THEN excluded.source_excerpt
                     ELSE topics.source_excerpt
+                END,
+                source_excerpt_origin = CASE
+                    WHEN excluded.source_excerpt != '' AND :source_excerpt_origin = 'official' THEN 'official'
+                    WHEN excluded.source_excerpt != ''
+                        AND topics.source_excerpt = ''
+                        AND :source_excerpt_origin IN ('official', 'mobile') THEN :source_excerpt_origin
+                    WHEN excluded.source_excerpt != ''
+                        AND topics.source_excerpt = excluded.source_excerpt
+                        AND topics.source_excerpt_origin = ''
+                        AND :source_excerpt_origin IN ('official', 'mobile') THEN :source_excerpt_origin
+                    ELSE topics.source_excerpt_origin
                 END,
                 cover_image_url = CASE
                     WHEN excluded.cover_image_url != '' THEN excluded.cover_image_url
                     ELSE topics.cover_image_url
+                END,
+                realtime_posts_json = CASE
+                    WHEN excluded.realtime_posts_json != '[]' THEN excluded.realtime_posts_json
+                    ELSE topics.realtime_posts_json
                 END,
                 tag = excluded.tag,
                 peak_tag = CASE
@@ -290,14 +324,63 @@ class AppRepository:
             observation_params,
         )
         self.conn.commit()
+        stored_topics = self._load_stored_topic_material(resolved_topics)
         logger.info(
             "热点入库完成: total=%s new_occurrences=%s updated_occurrences=%s observations=%s",
-            len(resolved_topics),
+            len(stored_topics),
             new_count,
             updated_count,
             len(observation_params),
         )
-        return resolved_topics
+        return stored_topics
+
+    def _load_stored_topic_material(self, topics: list[TopicCandidate]) -> list[TopicCandidate]:
+        if not topics:
+            return []
+        rows = {
+            str(row["id"]): row
+            for row in self.conn.execute(
+                f"""
+                SELECT id, url, source_excerpt, source_excerpt_origin, cover_image_url, realtime_posts_json
+                FROM topics
+                WHERE id IN ({','.join('?' for _ in topics)})
+                """,
+                [topic.id for topic in topics],
+            ).fetchall()
+        }
+        result: list[TopicCandidate] = []
+        for topic in topics:
+            row = rows.get(topic.id)
+            if row is None:
+                result.append(topic)
+                continue
+            stored_excerpt = str(row["source_excerpt"] or "")
+            stored_origin = str(row["source_excerpt_origin"] or "").strip()
+            if stored_excerpt and stored_origin == "official":
+                source_excerpt_origin = "official"
+                official_context = stored_excerpt
+                mobile_context = topic.mobile_context
+            elif stored_excerpt:
+                source_excerpt_origin = "mobile"
+                official_context = topic.official_context
+                mobile_context = stored_excerpt
+            else:
+                source_excerpt_origin = ""
+                official_context = ""
+                mobile_context = ""
+            result.append(
+                replace(
+                    topic,
+                    url=str(row["url"] or topic.url),
+                    source_excerpt=stored_excerpt,
+                    cover_image_url=str(row["cover_image_url"] or ""),
+                    realtime_posts=tuple(_parse_realtime_posts_json(str(row["realtime_posts_json"] or "[]"))),
+                    source_excerpt_origin=source_excerpt_origin,
+                    official_context=official_context,
+                    mobile_context=mobile_context,
+                )
+            )
+        return result
 
     def _resolve_topic_occurrence(
         self,
@@ -447,7 +530,7 @@ class AppRepository:
         rows = self.conn.execute(
             f"""
             SELECT
-                id, channel_id, title, title_key, url, source_excerpt, cover_image_url,
+                id, channel_id, title, title_key, url, source_excerpt, cover_image_url, realtime_posts_json,
                 tag, peak_tag, rank, best_rank, score, peak_score, source_id,
                 occurrence_started_at, recurrence_window_hours,
                 first_seen_at, last_seen_at, seen_count
@@ -476,7 +559,7 @@ class AppRepository:
         row = self.conn.execute(
             """
             SELECT
-                id, channel_id, title, title_key, url, source_excerpt, cover_image_url,
+                id, channel_id, title, title_key, url, source_excerpt, cover_image_url, realtime_posts_json,
                 tag, peak_tag, rank, best_rank, score, peak_score, source_id,
                 occurrence_started_at, recurrence_window_hours,
                 first_seen_at, last_seen_at, seen_count
@@ -552,7 +635,7 @@ class AppRepository:
             SELECT
                 topic_id, title, status, summary, takeaway, facts_json, commentary, risk_note,
                 sources_json, confidence, error_message, model, prompt_version, api_mode,
-                context_hash, search_source_count, created_at, updated_at
+                context_hash, failed_retry_context_hash, search_source_count, created_at, updated_at
             FROM ai_insights
             WHERE topic_id = ?
             """,
@@ -569,7 +652,7 @@ class AppRepository:
                         "takeaway": row["takeaway"],
                         "facts": json.loads(row["facts_json"]),
                         "commentary": row["commentary"],
-                        "risk_note": row["risk_note"],
+                        "risk_note": sanitize_public_risk_note(str(row["risk_note"] or "")),
                         "sources": json.loads(row["sources_json"]),
                         "confidence": row["confidence"],
                     }
@@ -586,6 +669,7 @@ class AppRepository:
             "prompt_version": row["prompt_version"],
             "api_mode": row["api_mode"],
             "context_hash": row["context_hash"],
+            "failed_retry_context_hash": row["failed_retry_context_hash"],
             "search_source_count": row["search_source_count"],
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
@@ -603,16 +687,18 @@ class AppRepository:
         search_source_count: int = 0,
     ) -> None:
         now = now_iso()
+        detail = replace(detail, risk_note=sanitize_public_risk_note(detail.risk_note))
         self.conn.execute(
             """
             INSERT INTO ai_insights
                 (
                     topic_id, channel_id, title, status, summary, facts_json, commentary,
                     takeaway, risk_note, sources_json, confidence, error_message, model,
-                    prompt_version, api_mode, context_hash, search_source_count, created_at, updated_at
+                    prompt_version, api_mode, context_hash, failed_retry_context_hash,
+                    search_source_count, created_at, updated_at
                 )
             VALUES
-                (?, ?, ?, 'success', ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?)
+                (?, ?, ?, 'success', ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, '', ?, ?, ?)
             ON CONFLICT(topic_id) DO UPDATE SET
                 channel_id = excluded.channel_id,
                 title = excluded.title,
@@ -629,6 +715,7 @@ class AppRepository:
                 prompt_version = excluded.prompt_version,
                 api_mode = excluded.api_mode,
                 context_hash = excluded.context_hash,
+                failed_retry_context_hash = '',
                 search_source_count = excluded.search_source_count,
                 updated_at = excluded.updated_at
             """,
@@ -674,6 +761,7 @@ class AppRepository:
         prompt_version: str = "",
         api_mode: str = "",
         context_hash: str = "",
+        failed_retry_context_hash: str = "",
         search_source_count: int = 0,
     ) -> None:
         now = now_iso()
@@ -683,10 +771,11 @@ class AppRepository:
                 (
                     topic_id, channel_id, title, status, summary, facts_json, commentary,
                     takeaway, risk_note, sources_json, confidence, error_message, model,
-                    prompt_version, api_mode, context_hash, search_source_count, created_at, updated_at
+                    prompt_version, api_mode, context_hash, failed_retry_context_hash,
+                    search_source_count, created_at, updated_at
                 )
             VALUES
-                (?, ?, ?, 'failed', '', '[]', '', '', '', '[]', '', ?, ?, ?, ?, ?, ?, ?, ?)
+                (?, ?, ?, 'failed', '', '[]', '', '', '', '[]', '', ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(topic_id) DO UPDATE SET
                 channel_id = excluded.channel_id,
                 title = excluded.title,
@@ -703,6 +792,7 @@ class AppRepository:
                 prompt_version = excluded.prompt_version,
                 api_mode = excluded.api_mode,
                 context_hash = excluded.context_hash,
+                failed_retry_context_hash = excluded.failed_retry_context_hash,
                 search_source_count = excluded.search_source_count,
                 updated_at = excluded.updated_at
             """,
@@ -715,6 +805,7 @@ class AppRepository:
                 prompt_version,
                 api_mode,
                 context_hash,
+                failed_retry_context_hash,
                 search_source_count,
                 now,
                 now,
@@ -753,6 +844,9 @@ def make_target_id(provider: str, target: str) -> str:
 
 
 def _topic_params(topic: TopicCandidate) -> dict:
+    source_excerpt_origin = topic.source_excerpt_origin
+    if source_excerpt_origin not in {"official", "mobile"}:
+        source_excerpt_origin = "mobile" if topic.source_excerpt else ""
     return {
         "id": topic.id,
         "channel_id": topic.channel_id,
@@ -761,6 +855,11 @@ def _topic_params(topic: TopicCandidate) -> dict:
         "url": topic.url,
         "source_excerpt": topic.source_excerpt,
         "cover_image_url": topic.cover_image_url,
+        "realtime_posts_json": json.dumps(
+            [post.to_dict() for post in topic.realtime_posts],
+            ensure_ascii=False,
+        ),
+        "source_excerpt_origin": source_excerpt_origin,
         "tag": topic.tag,
         "peak_tag": topic.tag,
         "rank": topic.rank,
@@ -831,6 +930,7 @@ def _topic_row_to_dict(row: sqlite3.Row, ai_record: dict | None) -> dict:
         ai_error = str(ai_record["error_message"] or "")
         if ai_record["detail"] is not None:
             detail = ai_record["detail"].to_dict()
+    realtime_posts = _parse_realtime_posts_json(str(row["realtime_posts_json"] or "[]"))
     return {
         "id": str(row["id"]),
         "channel_id": str(row["channel_id"]),
@@ -839,8 +939,10 @@ def _topic_row_to_dict(row: sqlite3.Row, ai_record: dict | None) -> dict:
         "tag": str(row["tag"]),
         "peak_tag": str(row["peak_tag"]),
         "url": str(row["url"]),
+        "mobile_url": weibo_mobile_search_url(str(row["title"])),
         "source_excerpt": str(row["source_excerpt"]),
         "cover_image_url": str(row["cover_image_url"]),
+        "realtime_posts": [post.to_dict() for post in realtime_posts],
         "source_id": str(row["source_id"]),
         "occurrence_started_at": str(row["occurrence_started_at"]),
         "recurrence_window_hours": int(row["recurrence_window_hours"]),
@@ -855,3 +957,17 @@ def _topic_row_to_dict(row: sqlite3.Row, ai_record: dict | None) -> dict:
         "ai_error": ai_error,
         "ai_detail": detail,
     }
+
+
+def _parse_realtime_posts_json(value: str) -> list[WeiboRealtimePost]:
+    try:
+        data = json.loads(value or "[]")
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(data, list):
+        return []
+    return [
+        post
+        for post in (WeiboRealtimePost.from_raw(item) for item in data)
+        if post.text or post.author or post.url
+    ]

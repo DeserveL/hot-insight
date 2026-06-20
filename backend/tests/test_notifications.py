@@ -121,6 +121,7 @@ def _config(temp_dir: str, *, alert_tags: tuple[str, ...], source_order: tuple[s
         alert_tags=alert_tags,
         weibo_source_order=source_order,
         database_path=Path(temp_dir) / "hot_insight.sqlite3",
+        weibo_mobile_enabled=False,
         ai_detail=AIDetailConfig(enabled=False),
     )
 
