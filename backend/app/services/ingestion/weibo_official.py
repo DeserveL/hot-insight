@@ -23,6 +23,7 @@ WEIBO_REALTIME_URL = "https://weibo.com/a/hot/realtime"
 WEIBO_DETAIL_PREFIX = "https://weibo.com/a/hot/"
 WEIBO_MOBILE_HOME_URL = "https://m.weibo.cn/"
 WEIBO_MOBILE_SEARCH_API = "https://m.weibo.cn/api/container/getIndex"
+WEIBO_MOBILE_VISITOR_URL = "https://visitor.passport.weibo.cn/visitor/genvisitor2"
 WEIBO_MOBILE_CONTAINER_TEMPLATE = "100103type=1&q={keyword}"
 WEIBO_MOBILE_FRESHNESS_DAYS = 7
 
@@ -75,6 +76,16 @@ class WeiboMobileSearchMaterial:
     source_excerpt: str = ""
     cover_image_url: str = ""
     realtime_posts: tuple[WeiboRealtimePost, ...] = ()
+
+
+@dataclass(frozen=True)
+class WeiboMobileSearchMetrics:
+    ok: object = ""
+    cards: int = 0
+    mblogs: int = 0
+    text_posts: int = 0
+    keyword_match: int = 0
+    fresh_posts: int = 0
 
 
 class WeiboOfficialHotTopicSource(HotTopicSource):
@@ -308,6 +319,31 @@ def build_weibo_document_headers(url: str, *, referer: str = "") -> dict[str, st
     return headers
 
 
+def build_weibo_mobile_api_headers(
+    referer: str,
+    session: requests.Session | None = None,
+) -> dict[str, str]:
+    headers = dict(WEIBO_MOBILE_HEADERS)
+    headers["Referer"] = referer
+    headers["Sec-Fetch-Dest"] = "empty"
+    headers["Sec-Fetch-Mode"] = "cors"
+    headers["Sec-Fetch-Site"] = "same-origin"
+    xsrf_token = _session_cookie(session, "XSRF-TOKEN", host="m.weibo.cn") if session is not None else ""
+    if xsrf_token:
+        headers["X-XSRF-TOKEN"] = xsrf_token
+    return headers
+
+
+def build_weibo_mobile_visitor_headers(referer: str) -> dict[str, str]:
+    headers = dict(WEIBO_BROWSER_HEADERS)
+    headers["Accept"] = "*/*"
+    headers["Referer"] = referer
+    headers["Sec-Fetch-Dest"] = "empty"
+    headers["Sec-Fetch-Mode"] = "cors"
+    headers["Sec-Fetch-Site"] = _sec_fetch_site(WEIBO_MOBILE_VISITOR_URL, referer)
+    return headers
+
+
 def parse_weibo_official_top_html(
     html: str,
     fetched_at: str,
@@ -454,38 +490,229 @@ def fetch_weibo_mobile_search_material(
     if not keyword or max_posts <= 0:
         return WeiboMobileSearchMaterial()
 
-    params = {"containerid": WEIBO_MOBILE_CONTAINER_TEMPLATE.format(keyword=keyword)}
-    for attempt in range(1, max(max_retries, 1) + 1):
+    container_id = WEIBO_MOBILE_CONTAINER_TEMPLATE.format(keyword=keyword)
+    search_url = _mobile_search_page_url(keyword)
+    params = {"containerid": container_id, "page_type": "searchall"}
+    ensure_weibo_mobile_visitor(session, search_url, timeout, title=title)
+    login_retry_initialized = False
+    max_attempts = max(max_retries, 1)
+    attempt = 1
+    while attempt <= max_attempts:
         try:
             response = session.get(
                 WEIBO_MOBILE_SEARCH_API,
                 params=params,
                 timeout=timeout,
-                headers=WEIBO_MOBILE_HEADERS,
+                headers=build_weibo_mobile_api_headers(search_url, session),
             )
+            if _is_mobile_login_required_response(response):
+                logger.info(
+                    (
+                        "微博移动端词页解析完成: title=%s attempt=%s/%s status=%s ok=%s "
+                        "cards=%s mblogs=%s text_posts=%s keyword_match=%s fresh_posts=%s reason=login_required_retry"
+                    ),
+                    title,
+                    attempt,
+                    max_attempts,
+                    getattr(response, "status_code", "-"),
+                    "-",
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                )
+                if not login_retry_initialized:
+                    login_retry_initialized = ensure_weibo_mobile_visitor(
+                        session,
+                        search_url,
+                        timeout,
+                        title=title,
+                        force=True,
+                    )
+                    if login_retry_initialized:
+                        if attempt >= max_attempts:
+                            max_attempts += 1
+                        attempt += 1
+                        continue
+                attempt += 1
+                continue
             response.raise_for_status()
             payload = response.json()
+            metrics = inspect_weibo_mobile_search_payload(payload, keyword=keyword)
+            if _is_mobile_login_required_payload(payload):
+                logger.info(
+                    (
+                        "微博移动端词页解析完成: title=%s attempt=%s/%s status=%s ok=%s "
+                        "cards=%s mblogs=%s text_posts=%s keyword_match=%s fresh_posts=%s reason=login_required_retry"
+                    ),
+                    title,
+                    attempt,
+                    max_attempts,
+                    getattr(response, "status_code", "-"),
+                    metrics.ok,
+                    metrics.cards,
+                    metrics.mblogs,
+                    metrics.text_posts,
+                    metrics.keyword_match,
+                    metrics.fresh_posts,
+                )
+                if not login_retry_initialized:
+                    login_retry_initialized = ensure_weibo_mobile_visitor(
+                        session,
+                        search_url,
+                        timeout,
+                        title=title,
+                        force=True,
+                    )
+                    if login_retry_initialized:
+                        if attempt >= max_attempts:
+                            max_attempts += 1
+                        attempt += 1
+                        continue
+                attempt += 1
+                continue
             material = parse_weibo_mobile_search_cards(
                 payload,
                 keyword=keyword,
                 max_posts=max_posts,
                 max_excerpt_chars=max_excerpt_chars,
             )
+            logger.info(
+                (
+                    "微博移动端词页解析完成: title=%s attempt=%s/%s status=%s ok=%s "
+                    "cards=%s mblogs=%s text_posts=%s keyword_match=%s fresh_posts=%s reason=%s"
+                ),
+                title,
+                attempt,
+                max_attempts,
+                getattr(response, "status_code", "-"),
+                metrics.ok,
+                metrics.cards,
+                metrics.mblogs,
+                metrics.text_posts,
+                metrics.keyword_match,
+                metrics.fresh_posts,
+                _mobile_material_reason(material, metrics, keyword),
+            )
             if material.source_excerpt or material.realtime_posts or material.cover_image_url:
                 return material
-            if attempt == 1:
-                _ensure_mobile_guest_cookie(session, timeout)
         except Exception as exc:
             logger.info(
                 "微博移动端词页获取失败: title=%s attempt=%s/%s error=%s",
                 title,
                 attempt,
-                max(max_retries, 1),
+                max_attempts,
                 redact_sensitive_text(exc),
             )
-            if attempt == 1:
-                _ensure_mobile_guest_cookie(session, timeout)
+        attempt += 1
     return WeiboMobileSearchMaterial()
+
+
+def ensure_weibo_mobile_visitor(
+    session: requests.Session,
+    search_url: str,
+    timeout: int,
+    *,
+    title: str = "",
+    force: bool = False,
+) -> bool:
+    if not force and _has_weibo_mobile_visitor_cookie(session):
+        logger.info("微博移动端游客 Cookie 复用: title=%s reason=visitor_reused", title or "-")
+        return True
+    try:
+        initialize_weibo_mobile_visitor(session, search_url, timeout)
+    except Exception as exc:
+        logger.info(
+            "微博移动端游客 Cookie 初始化失败，继续降级: title=%s reason=visitor_failed error=%s",
+            title or "-",
+            redact_sensitive_text(exc),
+        )
+        return False
+    logger.info("微博移动端游客 Cookie 初始化成功: title=%s reason=visitor_initialized", title or "-")
+    return True
+
+
+def initialize_weibo_mobile_visitor(
+    session: requests.Session,
+    search_url: str,
+    timeout: int,
+    *,
+    stage: str = "mobile_search",
+) -> None:
+    page_started = time.perf_counter()
+    page_response = session.get(
+        search_url,
+        timeout=timeout,
+        headers=build_weibo_document_headers(search_url, referer=search_url),
+        allow_redirects=True,
+    )
+    page_response.raise_for_status()
+    visitor_page_url = str(getattr(page_response, "url", search_url) or search_url)
+    logger.info(
+        (
+            "微博移动端游客页请求完成: stage=%s status=%s final_host=%s visitor=%s "
+            "duration_ms=%.1f chars=%s"
+        ),
+        stage,
+        getattr(page_response, "status_code", "-"),
+        urlparse(visitor_page_url).netloc,
+        _is_visitor_page(page_response),
+        (time.perf_counter() - page_started) * 1000,
+        len(page_response.text or ""),
+    )
+
+    request_id = _extract_request_id(page_response.text)
+    return_url = _extract_js_string_var(page_response.text, "return_url") or search_url
+    payload = {
+        "cb": VISITOR_CALLBACK,
+        "ver": "20250916",
+        "request_id": request_id,
+        "tid": "",
+        "from": "weibo",
+        "webdriver": "false",
+        "rid": str(int(time.time() * 1000)),
+        "return_url": return_url,
+    }
+
+    visitor_started = time.perf_counter()
+    visitor_response = session.post(
+        WEIBO_MOBILE_VISITOR_URL,
+        data=payload,
+        timeout=timeout,
+        headers=build_weibo_mobile_visitor_headers(visitor_page_url),
+    )
+    visitor_response.raise_for_status()
+    logger.info(
+        "微博移动端游客 Cookie 初始化步骤完成: stage=%s step=genvisitor2 status=%s duration_ms=%.1f chars=%s",
+        stage,
+        getattr(visitor_response, "status_code", "-"),
+        (time.perf_counter() - visitor_started) * 1000,
+        len(visitor_response.text or ""),
+    )
+    data = _parse_visitor_jsonp(visitor_response.text)
+    if str(data.get("retcode")) != "20000000":
+        raise SourceError(f"微博移动端游客 Cookie 初始化失败: retcode={data.get('retcode')}")
+    visitor_data = data.get("data") if isinstance(data.get("data"), dict) else {}
+    if not str(visitor_data.get("sub") or "") or not str(visitor_data.get("subp") or ""):
+        raise SourceError("微博移动端游客 Cookie 初始化失败: 缺少 sub/subp")
+
+    back_started = time.perf_counter()
+    back_response = session.get(
+        return_url or search_url,
+        timeout=timeout,
+        headers=build_weibo_document_headers(return_url or search_url, referer=visitor_page_url),
+        allow_redirects=True,
+    )
+    back_response.raise_for_status()
+    logger.info(
+        "微博移动端游客 Cookie 初始化完成: stage=%s step=return_search status=%s final_host=%s duration_ms=%.1f chars=%s",
+        stage,
+        getattr(back_response, "status_code", "-"),
+        urlparse(str(getattr(back_response, "url", return_url or search_url))).netloc,
+        (time.perf_counter() - back_started) * 1000,
+        len(back_response.text or ""),
+    )
 
 
 def parse_weibo_mobile_search_cards(
@@ -519,6 +746,37 @@ def parse_weibo_mobile_search_cards(
         source_excerpt=_truncate_context("\n\n".join(parts), max_excerpt_chars),
         cover_image_url=cover_image_url,
         realtime_posts=tuple(posts),
+    )
+
+
+def inspect_weibo_mobile_search_payload(
+    payload: dict,
+    *,
+    keyword: str = "",
+) -> WeiboMobileSearchMetrics:
+    if not isinstance(payload, dict):
+        return WeiboMobileSearchMetrics(ok="-")
+    ok = payload.get("ok")
+    cards = payload.get("data", {}).get("cards") if isinstance(payload.get("data"), dict) else None
+    if not isinstance(cards, list):
+        return WeiboMobileSearchMetrics(ok=ok)
+
+    mblogs = _iter_mobile_mblogs(cards)
+    raw_posts = [_post_from_mblog(mblog) for mblog in mblogs]
+    text_posts = [post for post in raw_posts if post.text]
+    if keyword:
+        keyword_key = _normalize_mobile_keyword(keyword)
+        matched_posts = [post for post in text_posts if _mobile_post_matches_keyword(post, keyword_key)]
+    else:
+        matched_posts = text_posts
+    fresh_posts = [post for post in matched_posts if _is_fresh_mobile_created_at(post.created_at)]
+    return WeiboMobileSearchMetrics(
+        ok=ok,
+        cards=len(cards),
+        mblogs=len(mblogs),
+        text_posts=len(text_posts),
+        keyword_match=len(matched_posts),
+        fresh_posts=len(fresh_posts),
     )
 
 
@@ -586,6 +844,11 @@ def _extract_request_id(html: str) -> str:
     if not match:
         raise SourceError("微博游客页缺少 request_id")
     return match.group(1)
+
+
+def _extract_js_string_var(html: str, name: str) -> str:
+    match = re.search(rf'var\s+{re.escape(name)}\s*=\s*"([^"]*)"', html)
+    return unescape(match.group(1)).strip() if match else ""
 
 
 def _parse_visitor_jsonp(text: str) -> dict:
@@ -665,6 +928,11 @@ def _normalize_search_url(href: str, title: str) -> str:
     return f"https://s.weibo.com/weibo?q={quote(title)}"
 
 
+def _mobile_search_page_url(keyword: str) -> str:
+    container_id = WEIBO_MOBILE_CONTAINER_TEMPLATE.format(keyword=keyword)
+    return f"https://m.weibo.cn/search?containerid={quote(container_id, safe='')}"
+
+
 def _normalize_image_url(url: str) -> str:
     url = unescape(url).strip()
     if not url or url.startswith("data:"):
@@ -675,6 +943,79 @@ def _normalize_image_url(url: str) -> str:
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return ""
     return url
+
+
+def _is_mobile_login_required_response(response: requests.Response) -> bool:
+    status_code = getattr(response, "status_code", 200)
+    try:
+        if int(status_code) == 432:
+            return True
+    except (TypeError, ValueError):
+        pass
+    response_url = str(getattr(response, "url", "") or "")
+    return "passport.weibo.com/sso/signin" in response_url
+
+
+def _is_mobile_login_required_payload(payload: object) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    url = str(payload.get("url") or "")
+    return str(payload.get("ok")) == "-100" or "passport.weibo.com/sso/signin" in url
+
+
+def _mobile_material_reason(
+    material: WeiboMobileSearchMaterial,
+    metrics: WeiboMobileSearchMetrics,
+    keyword: str,
+) -> str:
+    if material.source_excerpt or material.realtime_posts or material.cover_image_url:
+        return "material_ready"
+    if str(metrics.ok) != "1":
+        return "payload_not_ok"
+    if metrics.cards <= 0:
+        return "empty_cards"
+    if metrics.mblogs <= 0:
+        return "empty_mblogs"
+    if metrics.text_posts <= 0:
+        return "filtered_empty"
+    if keyword and metrics.keyword_match <= 0:
+        return "filtered_empty"
+    if metrics.fresh_posts <= 0:
+        return "filtered_empty"
+    return "filtered_empty"
+
+
+def _has_weibo_mobile_visitor_cookie(session: requests.Session | None) -> bool:
+    return bool(
+        _session_cookie(session, "SUB", host="m.weibo.cn")
+        and _session_cookie(session, "SUBP", host="m.weibo.cn")
+    )
+
+
+def _session_cookie(session: requests.Session | None, name: str, *, host: str = "") -> str:
+    cookies = getattr(session, "cookies", None)
+    if host:
+        try:
+            for cookie in cookies or ():
+                if getattr(cookie, "name", "") != name:
+                    continue
+                if _cookie_matches_host(str(getattr(cookie, "domain", "") or ""), host):
+                    return str(getattr(cookie, "value", "") or "")
+        except Exception:
+            return ""
+    getter = getattr(cookies, "get", None)
+    if not callable(getter):
+        return ""
+    try:
+        return str(getter(name) or "")
+    except Exception:
+        return ""
+
+
+def _cookie_matches_host(cookie_domain: str, host: str) -> bool:
+    domain = cookie_domain.lstrip(".").lower()
+    host = host.lower()
+    return not domain or host == domain or host.endswith(f".{domain}")
 
 
 def _ensure_mobile_guest_cookie(session: requests.Session, timeout: int) -> None:

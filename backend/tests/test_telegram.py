@@ -175,6 +175,48 @@ class TelegramTests(unittest.TestCase):
         self.assertTrue(session.posts[0]["url"].endswith("/sendMessage"))
         self.assertIn("text", session.posts[0]["json"])
 
+    def test_falls_back_to_message_when_photo_url_content_type_is_rejected(self) -> None:
+        session = FakeTelegramSession(
+            [
+                {"ok": False, "description": "Bad Request: wrong type of the web page content"},
+                {"ok": True, "result": {"message_id": "message-fallback"}},
+            ]
+        )
+        notifier = TelegramNotifier(_config(), session=session)
+
+        result = notifier.send_topic(
+            _topic("爆点新闻", "爆", cover_image_url="https://wx2.sinaimg.cn/orj480/hot.jpg"),
+            ("爆",),
+            detail_url="https://site.test/topics/a",
+        )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.external_message_id, "message-fallback")
+        self.assertEqual(len(session.posts), 2)
+        self.assertTrue(session.posts[0]["url"].endswith("/sendPhoto"))
+        self.assertTrue(session.posts[1]["url"].endswith("/sendMessage"))
+        self.assertIn("text", session.posts[1]["json"])
+
+    def test_keeps_failure_when_photo_and_message_fallback_both_fail(self) -> None:
+        session = FakeTelegramSession(
+            [
+                {"ok": False, "description": "Bad Request: wrong type of the web page content"},
+                {"ok": False, "description": "Bad Request: chat not found"},
+            ]
+        )
+        notifier = TelegramNotifier(_config(max_retries=1), session=session)
+
+        result = notifier.send_topic(
+            _topic("爆点新闻", "爆", cover_image_url="https://wx2.sinaimg.cn/orj480/hot.jpg"),
+            ("爆",),
+            detail_url="https://site.test/topics/a",
+        )
+
+        self.assertFalse(result.ok)
+        self.assertIn("wrong type of the web page content", result.error_message)
+        self.assertIn("文本降级失败", result.error_message)
+        self.assertEqual(len(session.posts), 2)
+
     def test_http_error_uses_platform_description_without_bot_url(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             session = FakeTelegramSession(

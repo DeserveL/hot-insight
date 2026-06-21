@@ -99,6 +99,21 @@ class TelegramNotifier:
         result = self._send_photo_by_url(topic.cover_image_url, caption, reply_markup)
         if result.ok and result.media_file_id and self.asset_store is not None:
             self.asset_store.set_integration_asset("telegram", file_cache_key(topic.cover_image_url), result.media_file_id)
+        if not result.ok and _is_photo_url_content_type_error(result.error_message):
+            logger.warning(
+                "Telegram 封面 URL 内容类型不可用，降级为文本消息: topic_id=%s title=%s error=%s",
+                topic.id,
+                topic.title,
+                redact_sensitive_text(result.error_message),
+            )
+            fallback = self._send_message(caption, reply_markup)
+            if fallback.ok:
+                return fallback
+            return TelegramSendResult(
+                False,
+                f"{result.error_message}; 文本降级失败: {fallback.error_message}",
+                fallback.external_message_id,
+            )
         return result
 
     def _send_photo_by_file_id(
@@ -148,9 +163,15 @@ class TelegramNotifier:
                 if not _is_http_success(response):
                     last_error = _extract_telegram_error(response, f"Telegram {method} HTTP 请求失败")
                     logger.warning("Telegram %s 返回失败: %s", method, redact_sensitive_text(last_error))
+                    if method == "sendPhoto" and _is_photo_url_content_type_error(last_error):
+                        return TelegramSendResult(False, last_error)
                     continue
                 result = _parse_telegram_response(response.json())
-                if result.ok or _is_file_id_invalid(result.error_message):
+                if (
+                    result.ok
+                    or _is_file_id_invalid(result.error_message)
+                    or (method == "sendPhoto" and _is_photo_url_content_type_error(result.error_message))
+                ):
                     return result
                 last_error = redact_sensitive_text(result.error_message)
                 logger.warning("Telegram %s 返回失败: %s", method, redact_sensitive_text(result.error_message))
@@ -274,6 +295,11 @@ def _is_public_http_url(url: str) -> bool:
 def _is_file_id_invalid(error_message: str) -> bool:
     lowered = error_message.lower()
     return "file_id" in lowered or "file identifier" in lowered or "wrong file" in lowered
+
+
+def _is_photo_url_content_type_error(error_message: str) -> bool:
+    lowered = error_message.lower()
+    return "wrong type of the web page content" in lowered
 
 
 def _truncate(text: str, limit: int) -> str:
