@@ -15,7 +15,10 @@ class ApiTests(unittest.TestCase):
     def test_health_channels_topics_and_detail(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             database_path = Path(temp_dir) / "hot_insight.sqlite3"
-            topic = _topic("爆点新闻", "爆")
+            topic = _topic("爆点新闻", "爆").with_source_material(
+                source_excerpt="官方来源摘要",
+                source_excerpt_origin="official",
+            )
             repository = AppRepository(database_path)
             repository.save_topics([topic])
             repository.save_ai_insight_success(
@@ -55,10 +58,12 @@ class ApiTests(unittest.TestCase):
             self.assertEqual(topics.json()["items"][0]["best_rank"], 1)
             self.assertEqual(topics.json()["items"][0]["peak_score"], 100)
             self.assertIn("m.weibo.cn/search", topics.json()["items"][0]["mobile_url"])
+            self.assertEqual(topics.json()["items"][0]["source_excerpt_origin"], "official")
             self.assertEqual(detail.status_code, 200)
             self.assertEqual(detail.json()["peak_tag"], "爆")
             self.assertEqual(detail.json()["best_rank"], 1)
             self.assertEqual(detail.json()["peak_score"], 100)
+            self.assertEqual(detail.json()["source_excerpt_origin"], "official")
             self.assertEqual(detail.json()["ai_detail"]["summary"], "摘要")
             self.assertEqual(summary.status_code, 200)
             self.assertEqual(summary.json()["topic_count"], 1)

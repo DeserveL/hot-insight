@@ -103,6 +103,7 @@ export default async function TopicDetailPage({ params }: { params: Promise<{ id
           <RealtimePosts
             posts={topic.realtime_posts || []}
             sourceExcerpt={topic.source_excerpt}
+            sourceExcerptOrigin={topic.source_excerpt_origin}
             sourceUrl={sourceUrl}
             mobileUrl={mobileUrl}
           />

@@ -533,7 +533,8 @@ class AppRepository:
         rows = self.conn.execute(
             f"""
             SELECT
-                id, channel_id, title, title_key, url, source_excerpt, cover_image_url, realtime_posts_json,
+                id, channel_id, title, title_key, url, source_excerpt, source_excerpt_origin,
+                cover_image_url, realtime_posts_json,
                 tag, peak_tag, rank, best_rank, score, peak_score, source_id,
                 occurrence_started_at, recurrence_window_hours,
                 first_seen_at, last_seen_at, seen_count
@@ -562,7 +563,8 @@ class AppRepository:
         row = self.conn.execute(
             """
             SELECT
-                id, channel_id, title, title_key, url, source_excerpt, cover_image_url, realtime_posts_json,
+                id, channel_id, title, title_key, url, source_excerpt, source_excerpt_origin,
+                cover_image_url, realtime_posts_json,
                 tag, peak_tag, rank, best_rank, score, peak_score, source_id,
                 occurrence_started_at, recurrence_window_hours,
                 first_seen_at, last_seen_at, seen_count
@@ -964,6 +966,7 @@ def _topic_row_to_dict(row: sqlite3.Row, ai_record: dict | None) -> dict:
         "url": str(row["url"]),
         "mobile_url": weibo_mobile_search_url(str(row["title"])),
         "source_excerpt": str(row["source_excerpt"]),
+        "source_excerpt_origin": str(row["source_excerpt_origin"] or ""),
         "cover_image_url": str(row["cover_image_url"]),
         "realtime_posts": [post.to_dict() for post in realtime_posts],
         "source_id": str(row["source_id"]),

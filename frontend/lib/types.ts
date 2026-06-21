@@ -23,6 +23,7 @@ export type Topic = {
   url: string;
   mobile_url?: string;
   source_excerpt: string;
+  source_excerpt_origin?: "official" | "mobile" | "";
   cover_image_url: string;
   realtime_posts?: RealtimePost[];
   source_id: string;
