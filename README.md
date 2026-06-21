@@ -159,11 +159,16 @@ AI_DETAIL_API_KEY=
 AI_DETAIL_MODEL=
 AI_DETAIL_API_MODE=responses
 AI_DETAIL_EXTERNAL_SEARCH=off
+AI_DETAIL_CONTEXT_CHANGE_SIMILARITY_THRESHOLD=0.92
+AI_DETAIL_CONTEXT_CHANGE_LENGTH_DELTA=160
+AI_DETAIL_CONTEXT_CHANGE_LENGTH_RATIO=0.25
 AI_DETAIL_WEB_SEARCH_OPTIONS=
 AI_DETAIL_EXTRA_PAYLOAD_JSON={}
 ```
 
 AI 洞察默认以微博官方详情和微博移动端实时词页为主要材料，不强制联网搜索。`AI_DETAIL_EXTERNAL_SEARCH` 可设为 `optional` 或 `required` 作为外部核验辅助；若服务商只支持 Chat Completions，可将 `AI_DETAIL_API_MODE` 改为 `chat_completions`，并按服务商要求配置 `AI_DETAIL_WEB_SEARCH_OPTIONS`。
+
+为控制 token 消耗，已生成的 AI 洞察会缓存复用。微博官方详情从无到有、正文相似度明显降低、长度变化超过阈值时才会重新生成；标点、空白或少量短句变化会继续复用缓存。可通过 `AI_DETAIL_CONTEXT_CHANGE_*` 调整判定阈值。
 
 ## Docker 部署
 

@@ -64,6 +64,9 @@ class AIDetailConfig:
     timeout_seconds: int = 60
     temperature: float = 0.2
     external_search: str = "off"
+    context_change_similarity_threshold: float = 0.92
+    context_change_length_delta: int = 160
+    context_change_length_ratio: float = 0.25
     web_search_options: dict[str, Any] | None = None
     extra_payload: dict[str, Any] = field(default_factory=dict)
 
@@ -198,6 +201,12 @@ def _load_ai_detail_config() -> AIDetailConfig:
         timeout_seconds=max(_int_env("AI_DETAIL_TIMEOUT_SECONDS", 60), 1),
         temperature=_float_env("AI_DETAIL_TEMPERATURE", 0.2),
         external_search=_external_search_env(os.getenv("AI_DETAIL_EXTERNAL_SEARCH", "off")),
+        context_change_similarity_threshold=max(
+            min(_float_env("AI_DETAIL_CONTEXT_CHANGE_SIMILARITY_THRESHOLD", 0.92), 1.0),
+            0.0,
+        ),
+        context_change_length_delta=max(_int_env("AI_DETAIL_CONTEXT_CHANGE_LENGTH_DELTA", 160), 0),
+        context_change_length_ratio=max(_float_env("AI_DETAIL_CONTEXT_CHANGE_LENGTH_RATIO", 0.25), 0.0),
         web_search_options=_json_env("AI_DETAIL_WEB_SEARCH_OPTIONS", None),
         extra_payload=_json_env("AI_DETAIL_EXTRA_PAYLOAD_JSON", {}) or {},
     )

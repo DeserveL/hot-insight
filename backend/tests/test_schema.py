@@ -73,6 +73,7 @@ class SchemaTests(unittest.TestCase):
             self.assertIn("api_mode", ai_columns)
             self.assertIn("context_hash", ai_columns)
             self.assertIn("failed_retry_context_hash", ai_columns)
+            self.assertIn("context_material_json", ai_columns)
             self.assertIn("search_source_count", ai_columns)
             conn.close()
 

@@ -150,6 +150,9 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.ai_detail.timeout_seconds, 60)
         self.assertEqual(config.ai_detail.temperature, 0.2)
         self.assertEqual(config.ai_detail.external_search, "off")
+        self.assertEqual(config.ai_detail.context_change_similarity_threshold, 0.92)
+        self.assertEqual(config.ai_detail.context_change_length_delta, 160)
+        self.assertEqual(config.ai_detail.context_change_length_ratio, 0.25)
         self.assertIsNone(config.ai_detail.web_search_options)
         self.assertEqual(config.ai_detail.extra_payload, {})
         self.assertTrue(config.weibo_mobile_enabled)
@@ -191,6 +194,22 @@ class ConfigTests(unittest.TestCase):
             config = AppConfig.from_env(env_file=None)
 
         self.assertEqual(config.ai_detail.external_search, "optional")
+
+    def test_ai_detail_context_change_thresholds_are_configurable(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "AI_DETAIL_CONTEXT_CHANGE_SIMILARITY_THRESHOLD": "0.95",
+                "AI_DETAIL_CONTEXT_CHANGE_LENGTH_DELTA": "80",
+                "AI_DETAIL_CONTEXT_CHANGE_LENGTH_RATIO": "0.15",
+            },
+            clear=True,
+        ):
+            config = AppConfig.from_env(env_file=None)
+
+        self.assertEqual(config.ai_detail.context_change_similarity_threshold, 0.95)
+        self.assertEqual(config.ai_detail.context_change_length_delta, 80)
+        self.assertEqual(config.ai_detail.context_change_length_ratio, 0.15)
 
     def test_weibo_mobile_options_are_configurable(self) -> None:
         with patch.dict(

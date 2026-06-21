@@ -8,6 +8,7 @@ from backend.app.core.config import AIDetailConfig, AppConfig, WeComConfig
 from backend.app.db.repositories import AppRepository
 from backend.app.domain.models import AIDetail, TopicCandidate
 from backend.app.services.ai.detail_client import AIContext, build_context_hash
+from backend.app.services.ai.context_change import build_context_material_snapshot, serialize_context_material_snapshot
 from backend.app.services.ai.prompts import PROMPT_VERSION
 from backend.app.services.ingestion.service import _generate_ai_detail_if_missing, filter_alert_topics, filter_track_topics, run_once
 from backend.app.services.notifications.router import DeliveryResult, DeliveryTarget
@@ -471,6 +472,8 @@ class ServiceTests(unittest.TestCase):
 
             self.assertEqual(result.sent_count, 1)
             self.assertEqual(ai_client.calls, [])
+            record = repository.get_ai_insight_record(topic.id)
+            self.assertEqual(record["context_material"]["version"], 1)
             repository.close()
 
     def test_cached_ai_insight_regenerates_when_source_excerpt_changes(self) -> None:
@@ -507,6 +510,118 @@ class ServiceTests(unittest.TestCase):
             self.assertEqual(record["context_hash"], build_context_hash(enriched_topic, enriched_topic.source_excerpt))
             repository.close()
 
+    def test_cached_ai_insight_skips_minor_official_context_change(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = _config(temp_dir)
+            repository = AppRepository(config.database_path)
+            old_text = "苹果全面涨价，多个机型价格调整。官方回应称以页面信息为准。"
+            new_text = "苹果全面涨价, 多个机型价格调整。 官方回应称以页面信息为准。 查看全文"
+            topic = _topic("苹果全面涨价", "爆").with_source_material(
+                source_excerpt=old_text,
+                source_excerpt_origin="official",
+                official_context=old_text,
+            )
+            repository.save_topics([topic])
+            old_hash = build_context_hash(topic, old_text)
+            repository.save_ai_insight_success(
+                topic,
+                _detail(),
+                "test-model",
+                prompt_version=PROMPT_VERSION,
+                api_mode="responses",
+                context_hash=old_hash,
+                context_material_json=_context_material_json(official_context=old_text),
+            )
+            ai_client = FakeAIDetailClient()
+            changed_topic = topic.with_source_material(
+                source_excerpt=new_text,
+                source_excerpt_origin="official",
+                official_context=new_text,
+            )
+
+            result = _generate_ai_detail_if_missing(config, repository, ai_client, changed_topic)
+            record = repository.get_ai_insight_record(topic.id)
+
+            self.assertEqual(result, "skipped")
+            self.assertEqual(ai_client.calls, [])
+            self.assertEqual(record["context_hash"], old_hash)
+            repository.close()
+
+    def test_cached_ai_insight_regenerates_for_meaningful_official_context_change(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = _config(temp_dir)
+            repository = AppRepository(config.database_path)
+            old_text = "某热点已有基本说明，相关讨论仍在发酵。"
+            new_text = (
+                "某热点已有基本说明，相关讨论仍在发酵。"
+                "随后官方补充关键进展，明确时间线、涉事主体和后续处理安排，"
+                "这会显著改变对事件的梳理和风险提示。"
+            )
+            topic = _topic("重大变化热点", "爆").with_source_material(
+                source_excerpt=old_text,
+                source_excerpt_origin="official",
+                official_context=old_text,
+            )
+            repository.save_topics([topic])
+            repository.save_ai_insight_success(
+                topic,
+                _detail(),
+                "test-model",
+                prompt_version=PROMPT_VERSION,
+                api_mode="responses",
+                context_hash=build_context_hash(topic, old_text),
+                context_material_json=_context_material_json(official_context=old_text),
+            )
+            ai_client = FakeAIDetailClient()
+            ai_client.detail = _detail()
+            changed_topic = topic.with_source_material(
+                source_excerpt=new_text,
+                source_excerpt_origin="official",
+                official_context=new_text,
+            )
+
+            result = _generate_ai_detail_if_missing(config, repository, ai_client, changed_topic)
+            record = repository.get_ai_insight_record(topic.id)
+
+            self.assertEqual(result, "success")
+            self.assertEqual([topic.title for topic in ai_client.calls], ["重大变化热点"])
+            self.assertEqual(record["context_hash"], build_context_hash(changed_topic, new_text))
+            repository.close()
+
+    def test_failed_ai_cache_does_not_retry_for_minor_context_change(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = _config(temp_dir)
+            repository = AppRepository(config.database_path)
+            old_text = "苹果全面涨价，多个机型价格调整。官方回应称以页面信息为准。"
+            new_text = "苹果全面涨价, 多个机型价格调整。 官方回应称以页面信息为准。 查看全文"
+            topic = _topic("失败热点", "爆").with_source_material(
+                source_excerpt=old_text,
+                source_excerpt_origin="official",
+                official_context=old_text,
+            )
+            repository.save_topics([topic])
+            repository.save_ai_insight_failure(
+                topic,
+                "network down",
+                "test-model",
+                prompt_version=PROMPT_VERSION,
+                api_mode="responses",
+                context_hash=build_context_hash(topic, old_text),
+                context_material_json=_context_material_json(official_context=old_text),
+            )
+            ai_client = FakeAIDetailClient()
+            changed_topic = topic.with_source_material(
+                source_excerpt=new_text,
+                source_excerpt_origin="official",
+                official_context=new_text,
+            )
+
+            result = _generate_ai_detail_if_missing(config, repository, ai_client, changed_topic)
+
+            self.assertEqual(result, "skipped")
+            self.assertEqual(ai_client.calls, [])
+            repository.close()
+
     def test_failed_ai_cache_with_weibo_material_retries_once_per_context(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             config = _config(temp_dir)
@@ -536,17 +651,34 @@ class ServiceTests(unittest.TestCase):
                 official_context="微博官方详情补充内容",
             )
             third = _generate_ai_detail_if_missing(config, repository, ai_client, official_topic)
+            fourth = _generate_ai_detail_if_missing(config, repository, ai_client, official_topic)
             updated_record = repository.get_ai_insight_record(stored_topic.id)
 
             self.assertEqual(first, "failed")
             self.assertEqual(second, "skipped")
             self.assertEqual(third, "failed")
+            self.assertEqual(fourth, "skipped")
             self.assertEqual([topic.title for topic in ai_client.calls], ["爆点新闻", "爆点新闻"])
             self.assertEqual(record["failed_retry_context_hash"], context_hash)
             self.assertEqual(record["context_hash"], context_hash)
-            self.assertEqual(updated_record["failed_retry_context_hash"], "")
+            self.assertEqual(updated_record["failed_retry_context_hash"], updated_record["context_hash"])
             self.assertNotEqual(updated_record["context_hash"], context_hash)
             repository.close()
+
+
+def _context_material_json(
+    *,
+    official_context: str = "",
+    mobile_context: str = "",
+    has_mobile_context: bool = False,
+) -> str:
+    return serialize_context_material_snapshot(
+        build_context_material_snapshot(
+            official_context=official_context,
+            mobile_context=mobile_context,
+            has_mobile_context=has_mobile_context or bool(mobile_context),
+        )
+    )
 
 
 def _config(

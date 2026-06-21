@@ -98,6 +98,7 @@ CREATE TABLE IF NOT EXISTS ai_insights (
     api_mode TEXT NOT NULL DEFAULT '',
     context_hash TEXT NOT NULL DEFAULT '',
     failed_retry_context_hash TEXT NOT NULL DEFAULT '',
+    context_material_json TEXT NOT NULL DEFAULT '{}',
     search_source_count INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,

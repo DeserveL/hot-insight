@@ -13,6 +13,12 @@ from backend.app.core.logging import logging_run, mask_external_target, redact_s
 from backend.app.db.repositories import AppRepository
 from backend.app.domain.models import AIDetail, TopicCandidate, WEIBO_CHANNEL_ID, now_iso
 from backend.app.services.ai.detail_client import AIContext, AIDetailClient, build_context_hash, combine_weibo_context
+from backend.app.services.ai.context_change import (
+    ContextChangeThresholds,
+    build_context_material_snapshot,
+    evaluate_context_material_change,
+    serialize_context_material_snapshot,
+)
 from backend.app.services.ai.prompts import PROMPT_VERSION
 from backend.app.services.ingestion.weibo_official import (
     fetch_weibo_mobile_search_material,
@@ -330,10 +336,22 @@ def _generate_ai_detail_if_missing(
     topic: TopicCandidate,
 ) -> str:
     context = _prepare_ai_context(ai_client, topic)
+    context_material = _build_context_material(context)
+    context_material_json = serialize_context_material_snapshot(context_material)
     cached = repository.get_ai_insight_record(topic.id)
     retrying_failed_cache = False
     if cached:
-        if _ai_cache_matches(cached, config, context):
+        metadata_matches = _ai_cache_metadata_matches(cached, config)
+        exact_context_match = metadata_matches and cached.get("context_hash") == context.context_hash
+        if exact_context_match:
+            if not cached.get("context_material"):
+                repository.update_ai_context_material(topic.id, context_material_json)
+                logger.info(
+                    "AI 洞察缓存补写材料快照: topic_id=%s title=%s context_hash=%s",
+                    topic.id,
+                    topic.title,
+                    context.context_hash[:12],
+                )
             if cached["status"] == "success" and cached["detail"] is not None:
                 logger.info(
                     "AI 洞察跳过调用: topic_id=%s title=%s reason=success_cache updated_at=%s prompt_version=%s api_mode=%s context_hash=%s",
@@ -379,20 +397,129 @@ def _generate_ai_detail_if_missing(
                     str(cached.get("context_hash") or "")[:12] or "-",
                 )
                 return "skipped"
-        logger.info(
-            "AI 洞察缓存失效，将重新生成: topic_id=%s title=%s status=%s cached_model=%s current_model=%s cached_api_mode=%s current_api_mode=%s cached_prompt=%s current_prompt=%s cached_context=%s current_context=%s",
-            topic.id,
-            topic.title,
-            cached.get("status") or "-",
-            cached.get("model") or "-",
-            config.ai_detail.model or "未配置",
-            cached.get("api_mode") or "-",
-            config.ai_detail.api_mode,
-            cached.get("prompt_version") or "-",
-            PROMPT_VERSION,
-            str(cached.get("context_hash") or "")[:12] or "-",
-            context.context_hash[:12],
-        )
+        elif metadata_matches:
+            decision = evaluate_context_material_change(
+                cached.get("context_material") or {},
+                context_material,
+                _context_change_thresholds(config),
+            )
+            if cached["status"] == "success" and cached["detail"] is not None and not decision.significant:
+                logger.info(
+                    (
+                        "AI 洞察跳过调用: topic_id=%s title=%s reason=minor_context_change "
+                        "change_reason=%s basis=%s similarity=%.4f length_delta=%s length_ratio=%.4f "
+                        "cached_context=%s current_context=%s"
+                    ),
+                    topic.id,
+                    topic.title,
+                    decision.reason,
+                    decision.basis or "-",
+                    decision.similarity,
+                    decision.length_delta,
+                    decision.length_ratio,
+                    str(cached.get("context_hash") or "")[:12] or "-",
+                    context.context_hash[:12],
+                )
+                return "skipped"
+            if cached["status"] == "failed":
+                if not context.combined_context:
+                    logger.info(
+                        "AI 洞察跳过调用: topic_id=%s title=%s reason=failed_cache updated_at=%s error=%s prompt_version=%s api_mode=%s context_hash=%s",
+                        topic.id,
+                        topic.title,
+                        cached.get("updated_at") or "-",
+                        cached.get("error_message") or "-",
+                        cached.get("prompt_version") or "-",
+                        cached.get("api_mode") or "-",
+                        str(cached.get("context_hash") or "")[:12] or "-",
+                    )
+                    return "skipped"
+                if not decision.significant:
+                    logger.info(
+                        (
+                            "AI 洞察跳过调用: topic_id=%s title=%s reason=failed_cache_minor_context_change "
+                            "change_reason=%s basis=%s similarity=%.4f length_delta=%s length_ratio=%.4f "
+                            "cached_context=%s current_context=%s"
+                        ),
+                        topic.id,
+                        topic.title,
+                        decision.reason,
+                        decision.basis or "-",
+                        decision.similarity,
+                        decision.length_delta,
+                        decision.length_ratio,
+                        str(cached.get("context_hash") or "")[:12] or "-",
+                        context.context_hash[:12],
+                    )
+                    return "skipped"
+                failed_retry_context_hash = str(cached.get("failed_retry_context_hash") or "")
+                if failed_retry_context_hash == context.context_hash:
+                    logger.info(
+                        "AI 洞察跳过调用: topic_id=%s title=%s reason=failed_cache_retry_used updated_at=%s error=%s prompt_version=%s api_mode=%s context_hash=%s",
+                        topic.id,
+                        topic.title,
+                        cached.get("updated_at") or "-",
+                        cached.get("error_message") or "-",
+                        cached.get("prompt_version") or "-",
+                        cached.get("api_mode") or "-",
+                        str(cached.get("context_hash") or "")[:12] or "-",
+                    )
+                    return "skipped"
+                retrying_failed_cache = True
+                logger.info(
+                    (
+                        "AI 洞察失败缓存遇到重大微博材料变化，将重试一次: topic_id=%s title=%s "
+                        "change_reason=%s basis=%s similarity=%.4f length_delta=%s length_ratio=%.4f "
+                        "cached_context=%s current_context=%s"
+                    ),
+                    topic.id,
+                    topic.title,
+                    decision.reason,
+                    decision.basis or "-",
+                    decision.similarity,
+                    decision.length_delta,
+                    decision.length_ratio,
+                    str(cached.get("context_hash") or "")[:12] or "-",
+                    context.context_hash[:12],
+                )
+            logger.info(
+                (
+                    "AI 洞察缓存失效，将重新生成: topic_id=%s title=%s status=%s cached_model=%s current_model=%s "
+                    "cached_api_mode=%s current_api_mode=%s cached_prompt=%s current_prompt=%s "
+                    "cached_context=%s current_context=%s change_reason=%s basis=%s similarity=%.4f length_delta=%s length_ratio=%.4f"
+                ),
+                topic.id,
+                topic.title,
+                cached.get("status") or "-",
+                cached.get("model") or "-",
+                config.ai_detail.model or "未配置",
+                cached.get("api_mode") or "-",
+                config.ai_detail.api_mode,
+                cached.get("prompt_version") or "-",
+                PROMPT_VERSION,
+                str(cached.get("context_hash") or "")[:12] or "-",
+                context.context_hash[:12],
+                decision.reason,
+                decision.basis or "-",
+                decision.similarity,
+                decision.length_delta,
+                decision.length_ratio,
+            )
+        else:
+            logger.info(
+                "AI 洞察缓存失效，将重新生成: topic_id=%s title=%s status=%s cached_model=%s current_model=%s cached_api_mode=%s current_api_mode=%s cached_prompt=%s current_prompt=%s cached_context=%s current_context=%s change_reason=cache_metadata_changed",
+                topic.id,
+                topic.title,
+                cached.get("status") or "-",
+                cached.get("model") or "-",
+                config.ai_detail.model or "未配置",
+                cached.get("api_mode") or "-",
+                config.ai_detail.api_mode,
+                cached.get("prompt_version") or "-",
+                PROMPT_VERSION,
+                str(cached.get("context_hash") or "")[:12] or "-",
+                context.context_hash[:12],
+            )
 
     logger.info("AI 洞察生成开始: topic_id=%s title=%s tag=%s", topic.id, topic.title, topic.tag)
     started = time.perf_counter()
@@ -405,6 +532,7 @@ def _generate_ai_detail_if_missing(
             prompt_version=PROMPT_VERSION,
             api_mode=config.ai_detail.api_mode,
             context_hash=getattr(result, "context_hash", "") or context.context_hash,
+            context_material_json=context_material_json,
             search_source_count=getattr(result, "search_source_count", 0),
         )
         logger.info(
@@ -427,6 +555,7 @@ def _generate_ai_detail_if_missing(
         api_mode=config.ai_detail.api_mode,
         context_hash=getattr(result, "context_hash", "") or context.context_hash,
         failed_retry_context_hash=context.context_hash if retrying_failed_cache and context.combined_context else "",
+        context_material_json=context_material_json,
         search_source_count=getattr(result, "search_source_count", 0),
     )
     logger.warning(
@@ -462,11 +591,33 @@ def _prepare_ai_context(ai_client: AIDetailClient, topic: TopicCandidate) -> AIC
     )
 
 
-def _ai_cache_matches(cached: dict, config: AppConfig, context: AIContext) -> bool:
+def _build_context_material(context: AIContext) -> dict:
+    return build_context_material_snapshot(
+        official_context=context.official_context,
+        mobile_context=context.mobile_context,
+        has_mobile_context=bool(context.mobile_context or context.realtime_posts),
+    )
+
+
+def _context_change_thresholds(config: AppConfig) -> ContextChangeThresholds:
+    return ContextChangeThresholds(
+        similarity_threshold=config.ai_detail.context_change_similarity_threshold,
+        length_delta=config.ai_detail.context_change_length_delta,
+        length_ratio=config.ai_detail.context_change_length_ratio,
+    )
+
+
+def _ai_cache_metadata_matches(cached: dict, config: AppConfig) -> bool:
     return (
         cached.get("model") == config.ai_detail.model
         and cached.get("api_mode") == config.ai_detail.api_mode
         and cached.get("prompt_version") == PROMPT_VERSION
+    )
+
+
+def _ai_cache_matches(cached: dict, config: AppConfig, context: AIContext) -> bool:
+    return (
+        _ai_cache_metadata_matches(cached, config)
         and cached.get("context_hash") == context.context_hash
     )
 

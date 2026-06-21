@@ -15,6 +15,11 @@ from backend.app.services.ai.detail_client import (
     parse_chat_completion_detail,
     sanitize_ai_detail,
 )
+from backend.app.services.ai.context_change import (
+    ContextChangeThresholds,
+    build_context_material_snapshot,
+    evaluate_context_material_change,
+)
 
 
 class FakeResponse:
@@ -182,6 +187,57 @@ class AIDetailTests(unittest.TestCase):
             build_context_hash(topic, "", has_mobile_context=True),
             build_context_hash(topic, "微博官方详情页内容", has_mobile_context=True),
         )
+
+    def test_context_material_change_detects_official_context_becoming_available(self) -> None:
+        previous = build_context_material_snapshot(official_context="", mobile_context="", has_mobile_context=False)
+        current = build_context_material_snapshot(
+            official_context="微博官方详情页新增了完整事件说明。",
+            mobile_context="",
+            has_mobile_context=False,
+        )
+
+        decision = evaluate_context_material_change(previous, current, ContextChangeThresholds())
+
+        self.assertTrue(decision.significant)
+        self.assertEqual(decision.reason, "official_became_available")
+
+    def test_context_material_change_ignores_minor_punctuation_and_spacing_changes(self) -> None:
+        previous = build_context_material_snapshot(
+            official_context="苹果全面涨价，多个机型价格调整。 官方回应称以页面信息为准。",
+            mobile_context="",
+            has_mobile_context=False,
+        )
+        current = build_context_material_snapshot(
+            official_context="苹果全面涨价, 多个机型价格调整。官方回应称以页面信息为准。 查看全文",
+            mobile_context="",
+            has_mobile_context=False,
+        )
+
+        decision = evaluate_context_material_change(previous, current, ContextChangeThresholds())
+
+        self.assertFalse(decision.significant)
+        self.assertIn(decision.reason, {"same_context_material", "minor_context_change"})
+
+    def test_context_material_change_detects_meaningful_new_paragraph(self) -> None:
+        previous = build_context_material_snapshot(
+            official_context="某热点已有基本说明，相关讨论仍在发酵。",
+            mobile_context="",
+            has_mobile_context=False,
+        )
+        current = build_context_material_snapshot(
+            official_context=(
+                "某热点已有基本说明，相关讨论仍在发酵。"
+                "随后官方补充关键进展，明确时间线、涉事主体和后续处理安排，"
+                "这会显著改变对事件的梳理和风险提示。"
+            ),
+            mobile_context="",
+            has_mobile_context=False,
+        )
+
+        decision = evaluate_context_material_change(previous, current, ContextChangeThresholds())
+
+        self.assertTrue(decision.significant)
+        self.assertIn(decision.reason, {"similarity_below_threshold", "length_delta_exceeded", "length_ratio_exceeded"})
 
     def test_unknown_source_excerpt_origin_is_treated_as_mobile_context(self) -> None:
         client = AIDetailClient(_config())

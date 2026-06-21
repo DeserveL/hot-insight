@@ -79,6 +79,9 @@ class AppRepository:
             "failed_retry_context_hash": (
                 "ALTER TABLE ai_insights ADD COLUMN failed_retry_context_hash TEXT NOT NULL DEFAULT ''"
             ),
+            "context_material_json": (
+                "ALTER TABLE ai_insights ADD COLUMN context_material_json TEXT NOT NULL DEFAULT '{}'"
+            ),
             "search_source_count": (
                 "ALTER TABLE ai_insights ADD COLUMN search_source_count INTEGER NOT NULL DEFAULT 0"
             ),
@@ -635,7 +638,8 @@ class AppRepository:
             SELECT
                 topic_id, title, status, summary, takeaway, facts_json, commentary, risk_note,
                 sources_json, confidence, error_message, model, prompt_version, api_mode,
-                context_hash, failed_retry_context_hash, search_source_count, created_at, updated_at
+                context_hash, failed_retry_context_hash, context_material_json,
+                search_source_count, created_at, updated_at
             FROM ai_insights
             WHERE topic_id = ?
             """,
@@ -670,6 +674,8 @@ class AppRepository:
             "api_mode": row["api_mode"],
             "context_hash": row["context_hash"],
             "failed_retry_context_hash": row["failed_retry_context_hash"],
+            "context_material": _parse_json_object(str(row["context_material_json"] or "{}")),
+            "context_material_json": row["context_material_json"],
             "search_source_count": row["search_source_count"],
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
@@ -684,6 +690,7 @@ class AppRepository:
         prompt_version: str = "",
         api_mode: str = "",
         context_hash: str = "",
+        context_material_json: str = "{}",
         search_source_count: int = 0,
     ) -> None:
         now = now_iso()
@@ -695,10 +702,10 @@ class AppRepository:
                     topic_id, channel_id, title, status, summary, facts_json, commentary,
                     takeaway, risk_note, sources_json, confidence, error_message, model,
                     prompt_version, api_mode, context_hash, failed_retry_context_hash,
-                    search_source_count, created_at, updated_at
+                    context_material_json, search_source_count, created_at, updated_at
                 )
             VALUES
-                (?, ?, ?, 'success', ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, '', ?, ?, ?)
+                (?, ?, ?, 'success', ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, '', ?, ?, ?, ?)
             ON CONFLICT(topic_id) DO UPDATE SET
                 channel_id = excluded.channel_id,
                 title = excluded.title,
@@ -716,6 +723,7 @@ class AppRepository:
                 api_mode = excluded.api_mode,
                 context_hash = excluded.context_hash,
                 failed_retry_context_hash = '',
+                context_material_json = excluded.context_material_json,
                 search_source_count = excluded.search_source_count,
                 updated_at = excluded.updated_at
             """,
@@ -734,6 +742,7 @@ class AppRepository:
                 prompt_version,
                 api_mode,
                 context_hash,
+                _normalize_json_object_text(context_material_json),
                 search_source_count,
                 now,
                 now,
@@ -762,6 +771,7 @@ class AppRepository:
         api_mode: str = "",
         context_hash: str = "",
         failed_retry_context_hash: str = "",
+        context_material_json: str = "{}",
         search_source_count: int = 0,
     ) -> None:
         now = now_iso()
@@ -772,10 +782,10 @@ class AppRepository:
                     topic_id, channel_id, title, status, summary, facts_json, commentary,
                     takeaway, risk_note, sources_json, confidence, error_message, model,
                     prompt_version, api_mode, context_hash, failed_retry_context_hash,
-                    search_source_count, created_at, updated_at
+                    context_material_json, search_source_count, created_at, updated_at
                 )
             VALUES
-                (?, ?, ?, 'failed', '', '[]', '', '', '', '[]', '', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (?, ?, ?, 'failed', '', '[]', '', '', '', '[]', '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(topic_id) DO UPDATE SET
                 channel_id = excluded.channel_id,
                 title = excluded.title,
@@ -793,6 +803,7 @@ class AppRepository:
                 api_mode = excluded.api_mode,
                 context_hash = excluded.context_hash,
                 failed_retry_context_hash = excluded.failed_retry_context_hash,
+                context_material_json = excluded.context_material_json,
                 search_source_count = excluded.search_source_count,
                 updated_at = excluded.updated_at
             """,
@@ -806,6 +817,7 @@ class AppRepository:
                 api_mode,
                 context_hash,
                 failed_retry_context_hash,
+                _normalize_json_object_text(context_material_json),
                 search_source_count,
                 now,
                 now,
@@ -822,6 +834,17 @@ class AppRepository:
             context_hash[:12] if context_hash else "-",
             error_message,
         )
+
+    def update_ai_context_material(self, topic_id: str, context_material_json: str) -> None:
+        self.conn.execute(
+            """
+            UPDATE ai_insights
+            SET context_material_json = ?
+            WHERE topic_id = ?
+            """,
+            (_normalize_json_object_text(context_material_json), topic_id),
+        )
+        self.conn.commit()
 
     def should_send_health_alert(self, target_key: str, cooldown_minutes: int) -> bool:
         if cooldown_minutes <= 0:
@@ -971,3 +994,16 @@ def _parse_realtime_posts_json(value: str) -> list[WeiboRealtimePost]:
         for post in (WeiboRealtimePost.from_raw(item) for item in data)
         if post.text or post.author or post.url
     ]
+
+
+def _parse_json_object(value: str) -> dict:
+    try:
+        data = json.loads(value or "{}")
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _normalize_json_object_text(value: str) -> str:
+    data = _parse_json_object(value)
+    return json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
