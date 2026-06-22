@@ -41,3 +41,25 @@ a {
 .text-balance {
   text-wrap: balance;
 }
+
+@keyframes navigation-progress {
+  0% {
+    transform: translateX(-120%) scaleX(0.6);
+  }
+  55% {
+    transform: translateX(45%) scaleX(0.9);
+  }
+  100% {
+    transform: translateX(220%) scaleX(0.75);
+  }
+}
+
+.animate-navigation-progress {
+  animation: navigation-progress 1.15s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-navigation-progress {
+    animation: none;
+  }
+}
