@@ -15,7 +15,14 @@ from backend.app.core.config import AIDetailConfig
 from backend.app.core.logging import redact_sensitive_text
 from backend.app.domain.models import AIDetail, AIDetailSource, TopicCandidate, WeiboRealtimePost, weibo_mobile_search_url
 from backend.app.services.ai.prompts import PROMPT_VERSION, SYSTEM_PROMPT
-from backend.app.services.ai.sanitizer import sanitize_public_risk_note
+from backend.app.services.ai.sanitizer import (
+    GENERIC_COMMENTARY,
+    GENERIC_SUMMARY,
+    GENERIC_TAKEAWAY,
+    sanitize_generated_ai_facts,
+    sanitize_generated_ai_risk_note,
+    sanitize_generated_ai_text,
+)
 from backend.app.services.ingestion.weibo_official import fetch_weibo_official_detail_context
 
 logger = logging.getLogger(__name__)
@@ -348,16 +355,72 @@ def build_user_prompt(topic: TopicCandidate, official_context: str = "", context
         "combined": ai_context.combined_context,
         "realtime_posts": [post.to_dict() for post in ai_context.realtime_posts],
     }
+    material_digest = build_public_material_digest(topic, ai_context)
     return (
-        "请优先阅读 weibo_context 内的微博材料：官方公开详情页优先级最高，"
-        "微博移动端热搜词页和实时帖子用于补充当前讨论现场。"
-        "外部搜索结果只能辅助核验，不得覆盖微博实时材料。无法确认时明确写未能确认。"
+        "请先阅读下面的公开内容摘要，再参考后面的结构化数据。"
+        "“精选微博”优先用于梳理事件主线，“相关讨论”只用于判断讨论焦点和传播风险。"
+        "外部搜索结果只能辅助核验，不得覆盖当前热搜现场。无法确认时明确写未能确认。"
+        "输出给普通读者时要直接说明事件本身，少说“显示、表明、材料称”；"
+        "不要使用饭圈标签化判断，不要把讨论声量写成已证实事实。"
         "输出给用户时严禁出现 JSON key、字段名或上下文变量名，例如 weibo_context、official_context、"
         "mobile_context、realtime_posts、combined、source_excerpt、context_hash；"
-        "请改写成“微博官方详情”“微博移动端讨论”“实时帖子”等自然中文。"
+        "也不要出现“微博官方详情、移动端讨论、实时帖子、以上实时内容”等来源层级表述。"
         "请按 system 指定 JSON schema 返回。\n"
+        "公开内容摘要：\n"
+        + material_digest
+        + "\n\n结构化数据：\n"
         + json.dumps(payload_context, ensure_ascii=False, indent=2)
     )
+
+
+def build_public_material_digest(topic: TopicCandidate, context: AIContext) -> str:
+    lines = [f"- 热搜：{topic.title}"]
+    if context.official_context.strip():
+        lines.append("- 精选微博：")
+        lines.append(_indent_digest(_clip_digest_text(context.official_context, 900)))
+    featured_posts = [post for post in context.realtime_posts if post.is_featured]
+    related_posts = [post for post in context.realtime_posts if not post.is_featured]
+    if featured_posts and not context.official_context.strip():
+        lines.append("- 精选微博：")
+        lines.extend(_format_digest_posts(featured_posts[:1]))
+    if context.mobile_context.strip() and not context.official_context.strip():
+        lines.append("- 相关讨论摘要：")
+        lines.append(_indent_digest(_clip_digest_text(context.mobile_context, 700)))
+    if related_posts:
+        lines.append("- 相关讨论：")
+        lines.extend(_format_digest_posts(related_posts[:5]))
+    elif context.realtime_posts and not featured_posts:
+        lines.append("- 相关讨论：")
+        lines.extend(_format_digest_posts(list(context.realtime_posts)[:5]))
+    if len(lines) == 1:
+        lines.append("- 暂无足够公开内容可供确认。")
+    return "\n".join(lines)
+
+
+def _format_digest_posts(posts: list[WeiboRealtimePost]) -> list[str]:
+    lines: list[str] = []
+    for post in posts:
+        pieces = []
+        if post.author:
+            pieces.append(post.author)
+        if post.created_at:
+            pieces.append(post.created_at)
+        meta = f"（{'，'.join(pieces)}）" if pieces else ""
+        text = _clip_digest_text(post.text, 240)
+        if text:
+            lines.append(_indent_digest(f"{meta}{text}"))
+    return lines
+
+
+def _clip_digest_text(value: str, limit: int) -> str:
+    text = re.sub(r"\s+", " ", str(value or "").strip())
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "..."
+
+
+def _indent_digest(value: str) -> str:
+    return "  " + value.replace("\n", "\n  ")
 
 
 def combine_weibo_context(
@@ -445,8 +508,22 @@ def sanitize_ai_detail(
     has_weibo_context: bool = False,
     search_source_count: int = 0,
 ) -> AIDetail:
-    risk_note = sanitize_public_risk_note(detail.risk_note)
-    takeaway = detail.takeaway.strip() or _fallback_takeaway(detail)
+    summary = sanitize_generated_ai_text(detail.summary, fallback=GENERIC_SUMMARY)
+    facts = sanitize_generated_ai_facts(detail.facts)
+    commentary = sanitize_generated_ai_text(detail.commentary, fallback=GENERIC_COMMENTARY)
+    risk_note = sanitize_generated_ai_risk_note(detail.risk_note)
+    takeaway = sanitize_generated_ai_text(detail.takeaway, fallback="")
+    takeaway_seed = AIDetail(
+        summary=summary,
+        takeaway=takeaway,
+        facts=facts,
+        commentary=commentary,
+        risk_note=risk_note,
+        sources=detail.sources,
+        confidence=detail.confidence,
+    )
+    takeaway = takeaway or _fallback_takeaway(takeaway_seed)
+    takeaway = sanitize_generated_ai_text(takeaway, fallback=GENERIC_TAKEAWAY)
     confidence = normalize_confidence(
         detail.confidence,
         detail.sources,
@@ -455,10 +532,10 @@ def sanitize_ai_detail(
         search_source_count=search_source_count,
     )
     return AIDetail(
-        summary=detail.summary,
+        summary=summary,
         takeaway=takeaway,
-        facts=detail.facts,
-        commentary=detail.commentary,
+        facts=facts,
+        commentary=commentary,
         risk_note=risk_note,
         sources=detail.sources,
         confidence=confidence,

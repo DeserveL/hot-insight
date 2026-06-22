@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -15,6 +16,7 @@ from backend.app.services.ai.detail_client import (
     parse_chat_completion_detail,
     sanitize_ai_detail,
 )
+from backend.app.services.ai.prompts import PROMPT_VERSION, SYSTEM_PROMPT
 from backend.app.services.ai.context_change import (
     ContextChangeThresholds,
     build_context_material_snapshot,
@@ -162,6 +164,18 @@ class AIDetailTests(unittest.TestCase):
 
         self.assertIn("official_context", prompt)
         self.assertIn("微博官方详情页内容", prompt)
+        self.assertIn("公开内容摘要", prompt)
+        self.assertIn("精选微博", prompt)
+
+    def test_prompt_guides_reader_facing_output_without_source_layer_wording(self) -> None:
+        prompt = build_user_prompt(_topic(), official_context="公开说明内容")
+        readable_prompt = prompt.split("结构化数据：", 1)[0]
+
+        self.assertEqual(PROMPT_VERSION, "2026-06-19-content-v1")
+        self.assertNotIn("请改写成", readable_prompt)
+        self.assertIn("也不要出现", readable_prompt)
+        self.assertIn("关键事实只写可从输入材料或可靠来源确认的信息", SYSTEM_PROMPT)
+        self.assertNotIn("请改写成“微博官方详情”“微博移动端讨论”“实时帖子”等自然中文", readable_prompt)
 
     def test_context_hash_ignores_rank_url_and_mobile_content_jitter(self) -> None:
         topic = _topic().with_source_material(source_excerpt="移动摘要", source_excerpt_origin="mobile")
@@ -284,12 +298,69 @@ class AIDetailTests(unittest.TestCase):
                 self.assertNotIn(term, sanitized.risk_note)
                 self.assertIn("后续公开说明", sanitized.risk_note)
 
-    def test_sanitize_risk_note_keeps_natural_mobile_discussion_wording(self) -> None:
+    def test_sanitize_generated_risk_note_rewrites_source_layer_wording(self) -> None:
         detail = parse_chat_completion_detail(_ai_payload(risk_note="微博移动端讨论材料不足，仍需以后续公开说明为准。"))
 
         sanitized = sanitize_ai_detail(detail)
 
-        self.assertEqual(sanitized.risk_note, "微博移动端讨论材料不足，仍需以后续公开说明为准。")
+        self.assertNotIn("移动端讨论", sanitized.risk_note)
+        self.assertIn("公开讨论", sanitized.risk_note)
+
+    def test_sanitize_generated_detail_hides_source_layer_wording(self) -> None:
+        detail = parse_chat_completion_detail(
+            _ai_payload(
+                summary="微博官方详情显示，事件主线仍在发酵。",
+                takeaway="以上实时内容仍需观察",
+                facts=["实时帖子中可以确认已有公开讨论", "当事方回应未能确认"],
+                commentary="移动端讨论表明不宜过早站队。",
+                risk_note="微博移动端讨论里有未经证实说法。",
+            )
+        )
+
+        sanitized = sanitize_ai_detail(detail)
+        combined = " ".join(
+            [
+                sanitized.summary,
+                sanitized.takeaway,
+                *sanitized.facts,
+                sanitized.commentary,
+                sanitized.risk_note,
+            ]
+        )
+
+        for term in ("微博官方详情", "移动端讨论", "实时帖子", "以上实时内容"):
+            with self.subTest(term=term):
+                self.assertNotIn(term, combined)
+        self.assertIn("相关公开内容", sanitized.summary)
+        self.assertIn("公开讨论", sanitized.commentary)
+
+    def test_sanitize_generated_detail_hides_context_keys_in_all_fields(self) -> None:
+        detail = parse_chat_completion_detail(
+            _ai_payload(
+                summary="weibo_context 显示该热搜仍需核验。",
+                takeaway="official_context 已补充",
+                facts=["realtime_posts 有补充信息"],
+                commentary="source_excerpt 仍不足。",
+                risk_note="context_hash 变化后仍需核验。",
+            )
+        )
+
+        sanitized = sanitize_ai_detail(detail)
+        combined = " ".join(
+            [
+                sanitized.summary,
+                sanitized.takeaway,
+                *sanitized.facts,
+                sanitized.commentary,
+                sanitized.risk_note,
+            ]
+        )
+
+        for term in ("weibo_context", "official_context", "realtime_posts", "source_excerpt", "context_hash"):
+            with self.subTest(term=term):
+                self.assertNotIn(term, combined)
+        self.assertEqual(sanitized.facts, [])
+        self.assertIn("后续公开说明", sanitized.risk_note)
 
     def test_ai_insight_storage_success_and_failure_records(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -359,6 +430,36 @@ class AIDetailTests(unittest.TestCase):
             self.assertEqual(record["context_hash"], "hash-a")
             repository.close()
 
+    def test_cached_summary_facts_and_commentary_are_not_rewritten_on_read(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repository = AppRepository(Path(temp_dir) / "hot_insight.sqlite3")
+            topic = _topic()
+            repository.save_topics([topic])
+            detail = parse_chat_completion_detail(
+                _ai_payload(
+                    summary="微博官方详情显示，事件仍在发酵。",
+                    facts=["实时帖子中可以确认已有公开讨论"],
+                    commentary="移动端讨论表明仍需谨慎。",
+                    risk_note="风险",
+                )
+            )
+
+            repository.save_ai_insight_success(
+                topic,
+                detail,
+                "model-a",
+                prompt_version="prompt-a",
+                api_mode="responses",
+                context_hash="hash-a",
+            )
+            record = repository.get_ai_insight_record(topic.id)
+
+            self.assertEqual(record["status"], "success")
+            self.assertEqual(record["detail"].summary, "微博官方详情显示，事件仍在发酵。")
+            self.assertEqual(record["detail"].facts, ["实时帖子中可以确认已有公开讨论"])
+            self.assertEqual(record["detail"].commentary, "移动端讨论表明仍需谨慎。")
+            repository.close()
+
 
 def _config(
     web_search_options=None,
@@ -394,17 +495,28 @@ def _topic(title: str = "测试热搜", url: str = "https://s.weibo.com/weibo?q=
     )
 
 
-def _ai_payload(risk_note: str = "风险") -> dict:
+def _ai_payload(
+    *,
+    summary: str = "摘要",
+    takeaway: str = "一句话结论",
+    facts: list[str] | None = None,
+    commentary: str = "评价",
+    risk_note: str = "风险",
+) -> dict:
+    detail = {
+        "summary": summary,
+        "facts": facts if facts is not None else ["事实"],
+        "commentary": commentary,
+        "takeaway": takeaway,
+        "risk_note": risk_note,
+        "sources": [{"title": "源", "url": "https://example.com"}],
+        "confidence": "high",
+    }
     return {
         "choices": [
             {
                 "message": {
-                    "content": (
-                        '{"summary":"摘要","facts":["事实"],"commentary":"评价",'
-                        '"takeaway":"一句话结论",'
-                        f'"risk_note":"{risk_note}","sources":[{{"title":"源","url":"https://example.com"}}],'
-                        '"confidence":"high"}'
-                    )
+                    "content": json.dumps(detail, ensure_ascii=False)
                 }
             }
         ]

@@ -201,7 +201,7 @@ function AIDetailView({ topic }: { topic: Topic }) {
     <div className="mt-12">
       <div className="mb-2">
         <h2 className="text-xs font-bold uppercase tracking-[0.24em] text-[#A1A1A6]">AI 洞察</h2>
-        <p className="mt-3 text-sm font-medium leading-relaxed text-[#86868B]">由 AI 基于以上实时内容整理，仅供参考</p>
+        <p className="mt-3 text-sm font-medium leading-relaxed text-[#86868B]">由 AI 基于以上公开内容整理，仅供参考</p>
       </div>
       <Section title="热点梳理">
         <p>{detail.summary}</p>
@@ -216,7 +216,7 @@ function AIDetailView({ topic }: { topic: Topic }) {
           ))}
         </ul>
       </Section>
-      <Section title="AI 评价">
+      <Section title="观察">
         <p>{detail.commentary || "未能确认"}</p>
       </Section>
       <Section title="风险提示">
