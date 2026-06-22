@@ -28,9 +28,8 @@ export default async function WeiboPage({
       <section className="mb-10">
         <div className="flex flex-col gap-8 lg:flex-row lg:items-end lg:justify-between">
           <div className="max-w-3xl">
-            <div className="mb-4 text-sm font-semibold text-[#9A6A35]">微博热搜</div>
             <h1 className="text-balance text-5xl font-semibold leading-none tracking-tight text-[#1D1D1F] sm:text-6xl">
-              热点列表
+              微博热搜列表
             </h1>
             <p className="mt-6 max-w-2xl text-lg leading-relaxed text-[#86868B]">
               按标识浏览正在被关注的话题，进入详情页查看 AI 摘要、事实梳理和风险提示。

@@ -9,8 +9,7 @@ export default function AboutPage() {
   return (
     <main className="mx-auto max-w-4xl bg-surface px-5 py-20 sm:px-6 lg:py-24">
       <section className="mx-auto max-w-3xl text-center">
-        <div className="text-sm font-semibold text-[#9A6A35]">关于</div>
-        <h1 className="mt-5 text-balance text-6xl font-semibold leading-none tracking-tight text-[#1D1D1F] sm:text-7xl">
+        <h1 className="text-balance text-6xl font-semibold leading-none tracking-tight text-[#1D1D1F] sm:text-7xl">
           关于热点洞察
         </h1>
         <p className="mt-7 text-xl leading-relaxed text-[#86868B]">
