@@ -171,6 +171,31 @@ class SchemaTests(unittest.TestCase):
             self.assertEqual(origin, "mobile")
             repository.close()
 
+    def test_legacy_realtime_posts_json_without_card_fields_is_supported(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repository = AppRepository(Path(temp_dir) / "hot_insight.sqlite3")
+            topic = _topic_at("旧卡片热点", "爆", "2026-06-09T00:00:00+08:00")
+            repository.save_topics([topic])
+            repository.conn.execute(
+                """
+                UPDATE topics
+                SET realtime_posts_json = '[{"author":"旧用户","created_at":"今天 12:00","text":"旧微博内容","url":"https://m.weibo.cn/status/1"}]'
+                WHERE id = ?
+                """,
+                (topic.id,),
+            )
+            repository.conn.commit()
+
+            saved = repository.get_topic(topic.id)
+            post = saved["realtime_posts"][0]
+
+            self.assertEqual(post["author"], "旧用户")
+            self.assertEqual(post["images"], [])
+            self.assertEqual(post["origin"], "")
+            self.assertEqual(post["section"], "")
+            self.assertFalse(post["is_featured"])
+            repository.close()
+
     def test_official_excerpt_overwrites_mobile_excerpt(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             repository = AppRepository(Path(temp_dir) / "hot_insight.sqlite3")

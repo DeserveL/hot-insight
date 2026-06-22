@@ -760,11 +760,13 @@ def _enrich_official_source_material(
     enriched_count = 0
     excerpt_count = 0
     cover_count = 0
+    official_post_count = 0
     mobile_enriched_count = 0
     mobile_post_count = 0
     started = time.perf_counter()
     for topic in topics:
         official_material = fetch_weibo_official_detail_material(session, topic.url, timeout)
+        official_posts = official_material.realtime_posts
         mobile_material = (
             fetch_weibo_mobile_search_material(
                 session,
@@ -773,23 +775,28 @@ def _enrich_official_source_material(
                 max_posts=config.weibo_mobile_max_posts,
                 max_retries=config.weibo_mobile_max_retries,
             )
-            if config.weibo_mobile_enabled
+            if config.weibo_mobile_enabled and not official_posts
             else None
         )
         mobile_excerpt = mobile_material.source_excerpt if mobile_material is not None else ""
         mobile_cover = mobile_material.cover_image_url if mobile_material is not None else ""
-        realtime_posts = mobile_material.realtime_posts if mobile_material is not None else ()
+        mobile_posts = mobile_material.realtime_posts if mobile_material is not None else ()
+        realtime_posts = official_posts or mobile_posts
         source_excerpt = official_material.source_excerpt or mobile_excerpt
-        source_excerpt_origin = "official" if official_material.source_excerpt else "mobile" if mobile_excerpt else ""
+        source_excerpt_origin = (
+            "official" if official_material.source_excerpt or official_posts else "mobile" if mobile_excerpt else ""
+        )
         cover_image_url = official_material.cover_image_url or mobile_cover
 
         if not source_excerpt and not cover_image_url and not realtime_posts:
             enriched.append(topic)
             continue
         enriched_count += 1
-        if mobile_excerpt or realtime_posts:
+        if official_posts:
+            official_post_count += len(official_posts)
+        if mobile_excerpt or mobile_posts:
             mobile_enriched_count += 1
-            mobile_post_count += len(realtime_posts)
+            mobile_post_count += len(mobile_posts)
         if source_excerpt:
             excerpt_count += 1
         if cover_image_url:
@@ -807,12 +814,13 @@ def _enrich_official_source_material(
     logger.info(
         (
             "微博原始材料补充完成: topics=%s enriched=%s source_excerpt=%s cover_image=%s "
-            "mobile_enriched=%s mobile_posts=%s duration_ms=%.1f"
+            "official_posts=%s mobile_enriched=%s mobile_posts=%s duration_ms=%.1f"
         ),
         len(topics),
         enriched_count,
         excerpt_count,
         cover_count,
+        official_post_count,
         mobile_enriched_count,
         mobile_post_count,
         (time.perf_counter() - started) * 1000,

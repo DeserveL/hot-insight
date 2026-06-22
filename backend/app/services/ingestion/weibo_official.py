@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from html import unescape
-from urllib.parse import quote, urlencode, urljoin, urlparse
+from urllib.parse import parse_qs, quote, urlencode, urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup, Tag
@@ -69,6 +69,7 @@ WEIBO_MOBILE_HEADERS = {
 class WeiboOfficialDetailMaterial:
     source_excerpt: str = ""
     cover_image_url: str = ""
+    realtime_posts: tuple[WeiboRealtimePost, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -781,14 +782,33 @@ def inspect_weibo_mobile_search_payload(
 
 
 def parse_weibo_official_detail_material(html: str, *, max_excerpt_chars: int = 1200) -> WeiboOfficialDetailMaterial:
+    soup = BeautifulSoup(html, "html.parser")
+    posts = _parse_weibo_official_detail_posts_from_soup(soup)
+    source_excerpt = _excerpt_from_weibo_posts(posts, max_excerpt_chars)
+    if not source_excerpt:
+        source_excerpt = _parse_weibo_official_detail_context_from_soup(soup, max_chars=max_excerpt_chars)
+    cover_image_url = _first_post_image(posts) or _parse_weibo_official_cover_image_url_from_soup(soup)
     return WeiboOfficialDetailMaterial(
-        source_excerpt=parse_weibo_official_detail_context(html, max_chars=max_excerpt_chars),
-        cover_image_url=parse_weibo_official_cover_image_url(html),
+        source_excerpt=source_excerpt,
+        cover_image_url=cover_image_url,
+        realtime_posts=posts,
     )
+
+
+def parse_weibo_official_detail_posts(html: str) -> tuple[WeiboRealtimePost, ...]:
+    return _parse_weibo_official_detail_posts_from_soup(BeautifulSoup(html, "html.parser"))
 
 
 def parse_weibo_official_detail_context(html: str, *, max_chars: int = 1200) -> str:
     soup = BeautifulSoup(html, "html.parser")
+    posts = _parse_weibo_official_detail_posts_from_soup(soup)
+    post_excerpt = _excerpt_from_weibo_posts(posts, max_chars)
+    if post_excerpt:
+        return post_excerpt
+    return _parse_weibo_official_detail_context_from_soup(soup, max_chars=max_chars)
+
+
+def _parse_weibo_official_detail_context_from_soup(soup: BeautifulSoup, *, max_chars: int = 1200) -> str:
     parts: list[str] = []
 
     for element in soup.select(".list_title_s"):
@@ -806,7 +826,10 @@ def parse_weibo_official_detail_context(html: str, *, max_chars: int = 1200) -> 
 
 
 def parse_weibo_official_cover_image_url(html: str) -> str:
-    soup = BeautifulSoup(html, "html.parser")
+    return _parse_weibo_official_cover_image_url_from_soup(BeautifulSoup(html, "html.parser"))
+
+
+def _parse_weibo_official_cover_image_url_from_soup(soup: BeautifulSoup) -> str:
     selectors = (
         "#pl_unlogin_home_focuspic div.pic.W_piccut_v img",
         "#pl_unlogin_home_focuspic img",
@@ -828,6 +851,180 @@ def parse_weibo_official_cover_image_url(html: str) -> str:
                     or ""
                 )
             normalized = _normalize_image_url(url)
+            if normalized:
+                return normalized
+    return ""
+
+
+def _parse_weibo_official_detail_posts_from_soup(soup: BeautifulSoup) -> tuple[WeiboRealtimePost, ...]:
+    posts: list[WeiboRealtimePost] = []
+    focus_item = soup.select_one('#pl_unlogin_home_focuspic [action-type="feed_list_item"]')
+    if isinstance(focus_item, Tag):
+        featured_post = _post_from_official_detail_item(focus_item, section="featured", is_featured=True)
+        if featured_post.text:
+            posts.append(featured_post)
+
+    feed_root = soup.select_one("#pl_unlogin_home_feed")
+    if isinstance(feed_root, Tag):
+        for item in feed_root.select(
+            '.UG_list_v2[action-type="feed_list_item"], '
+            '.UG_list_a[action-type="feed_list_item"], '
+            '.UG_list_b[action-type="feed_list_item"]'
+        ):
+            if not isinstance(item, Tag):
+                continue
+            section = _official_detail_item_section(item, feed_root)
+            if section not in {"hot", "video", "all"}:
+                continue
+            post = _post_from_official_detail_item(item, section=section, is_featured=False)
+            if post.text:
+                posts.append(post)
+    return tuple(_dedupe_weibo_posts(posts))
+
+
+def _post_from_official_detail_item(item: Tag, *, section: str, is_featured: bool) -> WeiboRealtimePost:
+    text = _official_detail_item_text(item)
+    author, created_at = _official_detail_author_time(item)
+    reposts, comments, attitudes = _official_detail_metrics(item)
+    return WeiboRealtimePost(
+        author=author,
+        created_at=created_at,
+        text=text,
+        reposts=reposts,
+        comments=comments,
+        attitudes=attitudes,
+        url=_official_detail_item_url(item),
+        images=tuple(_official_detail_item_images(item)),
+        origin="official",
+        section=section,
+        is_featured=is_featured,
+    )
+
+
+def _official_detail_item_text(item: Tag) -> str:
+    text_node = (
+        item.select_one(".list_des .list_title_s")
+        or item.select_one(".list_des")
+        or item.select_one(".list_title_s")
+        or item
+    )
+    return _clean_official_post_text(text_node.get_text(" ", strip=True))
+
+
+def _official_detail_author_time(item: Tag) -> tuple[str, str]:
+    values: list[str] = []
+    for element in item.select(".subinfo_box span.subinfo"):
+        if _has_parent_with_class(element, "subinfo_face"):
+            continue
+        text = _normalize_space(element.get_text(" ", strip=True))
+        if text:
+            values.append(text)
+    author = values[0] if values else ""
+    created_at = values[1] if len(values) > 1 else ""
+    return author, created_at
+
+
+def _official_detail_metrics(item: Tag) -> tuple[int | None, int | None, int | None]:
+    reposts: int | None = None
+    comments: int | None = None
+    attitudes: int | None = None
+    for element in item.select(".subinfo_rgt"):
+        icon = element.select_one(".W_ficon")
+        icon_classes = set(icon.get("class") or []) if isinstance(icon, Tag) else set()
+        value = _official_metric_value(element)
+        if "ficon_forward" in icon_classes:
+            reposts = value
+        elif "ficon_repeat" in icon_classes:
+            comments = value
+        elif "ficon_praised" in icon_classes:
+            attitudes = value
+    return reposts, comments, attitudes
+
+
+def _official_metric_value(element: Tag) -> int | None:
+    for item in reversed(element.find_all("em")):
+        if not isinstance(item, Tag):
+            continue
+        classes = set(item.get("class") or [])
+        if "W_ficon" in classes:
+            continue
+        value = _mobile_count(item.get_text(" ", strip=True))
+        if value is not None:
+            return value
+    return None
+
+
+def _official_detail_item_url(item: Tag) -> str:
+    for element in (item, item.select_one(".list_des[href]"), item.select_one("a[href]")):
+        if not isinstance(element, Tag):
+            continue
+        url = _normalize_weibo_url(str(element.get("href") or ""))
+        if url:
+            return url
+    return ""
+
+
+def _official_detail_item_images(item: Tag) -> list[str]:
+    images: list[str] = []
+    for image in item.select("img"):
+        if not isinstance(image, Tag) or _has_parent_with_class(image, "subinfo_face"):
+            continue
+        normalized = _normalize_image_url(
+            str(image.get("src") or image.get("data-src") or image.get("data-original") or "")
+        )
+        if normalized and normalized not in images:
+            images.append(normalized)
+    for element in item.select("[action-data]"):
+        if not isinstance(element, Tag):
+            continue
+        data = parse_qs(str(element.get("action-data") or ""))
+        for value in data.get("cover_img", []):
+            normalized = _normalize_image_url(value)
+            if normalized and normalized not in images:
+                images.append(normalized)
+    return images
+
+
+def _official_detail_item_section(item: Tag, feed_root: Tag) -> str:
+    for heading in item.find_all_previous("h2", class_="UG_row_title"):
+        if feed_root not in heading.parents:
+            continue
+        text = _normalize_space(heading.get_text(" ", strip=True))
+        if "微博推荐" in text:
+            return "recommend"
+        if "热门视频" in text:
+            return "video"
+        if "全部微博" in text:
+            return "all"
+        if "热门微博" in text:
+            return "hot"
+    return ""
+
+
+def _dedupe_weibo_posts(posts: list[WeiboRealtimePost]) -> list[WeiboRealtimePost]:
+    result: list[WeiboRealtimePost] = []
+    seen: set[str] = set()
+    for post in posts:
+        key = post.url or post.text
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        result.append(post)
+    return result
+
+
+def _excerpt_from_weibo_posts(posts: tuple[WeiboRealtimePost, ...], max_chars: int) -> str:
+    parts: list[str] = []
+    for post in posts:
+        prefix = f"{post.author}：" if post.author else ""
+        _append_unique_context_part(parts, f"{prefix}{post.text}")
+    return _truncate_context("\n\n".join(parts[:8]), max_chars)
+
+
+def _first_post_image(posts: tuple[WeiboRealtimePost, ...]) -> str:
+    for post in posts:
+        for image in post.images:
+            normalized = _normalize_image_url(image)
             if normalized:
                 return normalized
     return ""
@@ -945,6 +1142,36 @@ def _normalize_image_url(url: str) -> str:
     return url
 
 
+def _normalize_weibo_url(url: str) -> str:
+    url = unescape(url).strip()
+    if not url or url.startswith("javascript:"):
+        return ""
+    if url.startswith("//"):
+        return f"https:{url}"
+    if url.startswith("/"):
+        return urljoin("https://weibo.com", url)
+    if url.startswith("http"):
+        return url
+    return ""
+
+
+def _clean_official_post_text(value: str) -> str:
+    text = unescape(value or "")
+    text = re.sub(r"[\u200b\u200c\u200d\ufeff]", "", text)
+    text = re.sub(r"展开全文\s*[cC]?", "", text)
+    text = text.replace("收起全文", "").replace("查看全文", "")
+    return _normalize_space(text)
+
+
+def _has_parent_with_class(element: Tag, class_name: str) -> bool:
+    parent = element.parent
+    while isinstance(parent, Tag):
+        if _class_contains(parent.get("class"), class_name):
+            return True
+        parent = parent.parent
+    return False
+
+
 def _is_mobile_login_required_response(response: requests.Response) -> bool:
     status_code = getattr(response, "status_code", 200)
     try:
@@ -1053,6 +1280,10 @@ def _post_from_mblog(mblog: dict) -> WeiboRealtimePost:
         comments=_mobile_count(mblog.get("comments_count")),
         attitudes=_mobile_count(mblog.get("attitudes_count")),
         url=post_url,
+        images=tuple(_images_from_mblog(mblog)),
+        origin="mobile",
+        section="related",
+        is_featured=False,
     )
 
 
@@ -1077,7 +1308,7 @@ def _mobile_count(value: object) -> int | None:
         return None
     if isinstance(value, int):
         return value
-    text = str(value).strip().replace(",", "")
+    text = str(value).strip().replace(",", "").replace("+", "")
     if text in {"转发", "评论", "赞"}:
         return None
     if text.endswith("万"):
@@ -1172,11 +1403,17 @@ def _first_mobile_cover_url(cards: list) -> str:
 
 
 def _cover_from_mblog(mblog: dict) -> str:
+    images = _images_from_mblog(mblog)
+    return images[0] if images else ""
+
+
+def _images_from_mblog(mblog: dict) -> list[str]:
+    images: list[str] = []
     page_info = mblog.get("page_info") if isinstance(mblog.get("page_info"), dict) else {}
     for key in ("page_pic", "page_url"):
         normalized = _normalize_image_url(str(page_info.get(key) or ""))
-        if normalized:
-            return normalized
+        if normalized and normalized not in images:
+            images.append(normalized)
     pics = mblog.get("pics")
     if isinstance(pics, list):
         for pic in pics:
@@ -1189,9 +1426,10 @@ def _cover_from_mblog(mblog: dict) -> str:
             ]
             for candidate in candidates:
                 normalized = _normalize_image_url(str(candidate or ""))
-                if normalized:
-                    return normalized
-    return ""
+                if normalized and normalized not in images:
+                    images.append(normalized)
+                    break
+    return images
 
 
 def _normalize_mobile_keyword(value: str) -> str:

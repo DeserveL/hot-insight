@@ -51,11 +51,21 @@ class WeiboRealtimePost:
     comments: int | None = None
     attitudes: int | None = None
     url: str = ""
+    images: tuple[str, ...] = ()
+    origin: str = ""
+    section: str = ""
+    is_featured: bool = False
 
     @classmethod
     def from_raw(cls, data: Any) -> "WeiboRealtimePost":
         if not isinstance(data, dict):
             return cls(author="", created_at="", text="")
+        images = data.get("images")
+        image_values = (
+            tuple(str(item or "").strip() for item in images if str(item or "").strip())
+            if isinstance(images, list)
+            else ()
+        )
         return cls(
             author=str(data.get("author") or "").strip(),
             created_at=str(data.get("created_at") or "").strip(),
@@ -64,6 +74,10 @@ class WeiboRealtimePost:
             comments=_to_int(data.get("comments")),
             attitudes=_to_int(data.get("attitudes")),
             url=str(data.get("url") or "").strip(),
+            images=image_values,
+            origin=str(data.get("origin") or "").strip(),
+            section=str(data.get("section") or "").strip(),
+            is_featured=bool(data.get("is_featured")),
         )
 
     def to_dict(self) -> dict:
@@ -75,6 +89,10 @@ class WeiboRealtimePost:
             "comments": self.comments,
             "attitudes": self.attitudes,
             "url": self.url,
+            "images": list(self.images),
+            "origin": self.origin,
+            "section": self.section,
+            "is_featured": self.is_featured,
         }
 
 

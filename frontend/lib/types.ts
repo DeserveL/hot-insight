@@ -50,6 +50,10 @@ export type RealtimePost = {
   comments: number | null;
   attitudes: number | null;
   url: string;
+  images?: string[];
+  origin?: "official" | "mobile" | "";
+  section?: "featured" | "hot" | "video" | "all" | "related" | "";
+  is_featured?: boolean;
 };
 
 export type TopicObservation = {

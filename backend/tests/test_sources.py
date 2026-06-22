@@ -11,6 +11,7 @@ from backend.app.services.ingestion.weibo_official import (
     parse_weibo_official_cover_image_url,
     parse_weibo_official_detail_context,
     parse_weibo_official_detail_material,
+    parse_weibo_official_detail_posts,
     parse_weibo_official_top_html,
 )
 from backend.app.services.ingestion.weibo_sources import (
@@ -237,6 +238,74 @@ class SourceParsingTests(unittest.TestCase):
         self.assertEqual(material.cover_image_url, "https://wx2.sinaimg.cn/orj480/example.jpg")
         self.assertIn("官方详情摘要内容", material.source_excerpt)
         self.assertEqual(parse_weibo_official_cover_image_url(html), material.cover_image_url)
+
+    def test_official_detail_material_extracts_structured_posts_from_hot_page(self) -> None:
+        html = """
+        <html><body>
+          <div id="pl_unlogin_home_focuspic">
+            <div class="list_nod clearfix" mid="m1" href="//weibo.com/111/Abc" action-type="feed_list_item">
+              <div class="pic W_piccut_v"><img src="//wx4.sinaimg.cn/orj480/focus.jpg" /></div>
+              <div class="list_des">精选正文 http://t.cn/demo</div>
+              <div class="subinfo_box clearfix">
+                <span class="subinfo_face"><img src="//tvax1.sinaimg.cn/avatar.jpg" /></span>
+                <span class="subinfo S_txt2">作者甲</span>
+                <span class="subinfo S_txt2">今天 12:38</span>
+                <span class="subinfo_rgt S_txt2"><em class="W_ficon ficon_praised"></em><em>10</em></span>
+                <span class="subinfo_rgt S_txt2"><em class="W_ficon ficon_repeat"></em><em>20</em></span>
+                <span class="subinfo_rgt S_txt2"><em class="W_ficon ficon_forward"></em><em>30</em></span>
+              </div>
+            </div>
+          </div>
+          <div id="pl_unlogin_home_feed">
+            <div class="UG_contents" node-type="feed_list">
+              <h2 class="UG_row_title">热门微博</h2>
+              <div class="UG_list_v2 clearfix" mid="m1" action-type="feed_list_item">
+                <div class="list_des" href="//weibo.com/111/Abc"><h3 class="list_title_s">重复精选</h3></div>
+              </div>
+              <div class="UG_list_v2 clearfix" mid="m2" action-type="feed_list_item">
+                <div class="list_des" href="//weibo.com/222/Def"><h3 class="list_title_s">热门微博正文</h3></div>
+                <div class="subinfo_box"><span class="subinfo S_txt2">作者乙</span><span class="subinfo S_txt2">今天 13:00</span></div>
+              </div>
+              <h2 class="UG_row_title">热门视频</h2>
+              <div class="UG_list_v2 clearfix" mid="m3" action-type="feed_list_item">
+                <div class="vid" action-data="cover_img=https%3A%2F%2Fwx3.sinaimg.cn%2Forj480%2Fvideo.jpg"></div>
+                <div class="list_des" href="//weibo.com/333/Ghi"><h3 class="list_title_s">热门视频正文 展开全文 c</h3></div>
+              </div>
+              <h2 class="UG_row_title">全部微博</h2>
+              <div class="UG_list_a" mid="m4" href="//weibo.com/444/Jkl" action-type="feed_list_item">
+                <h3 class="list_title_s">全部微博正文</h3>
+                <div class="list_nod"><div class="pic"><img src="//ww4.sinaimg.cn/thumb180/all.jpg" /></div></div>
+              </div>
+              <h2 class="UG_row_title">微博推荐</h2>
+              <div class="UG_list_a" mid="skip-rec" href="//weibo.com/555/Mno" action-type="feed_list_item">
+                <h3 class="list_title_s">推荐流不属于当前热搜</h3>
+              </div>
+            </div>
+          </div>
+          <div id="pl_unlogin_home_hotsearchkeywords">
+            <div class="UG_list_c" mid="skip-hot" action-type="feed_list_item">
+              <div class="des_main">右侧其他热搜</div>
+            </div>
+          </div>
+        </body></html>
+        """
+
+        material = parse_weibo_official_detail_material(html)
+        posts = parse_weibo_official_detail_posts(html)
+
+        self.assertEqual([post.section for post in posts], ["featured", "hot", "video", "all"])
+        self.assertTrue(posts[0].is_featured)
+        self.assertEqual(posts[0].author, "作者甲")
+        self.assertEqual(posts[0].attitudes, 10)
+        self.assertEqual(posts[0].comments, 20)
+        self.assertEqual(posts[0].reposts, 30)
+        self.assertEqual(posts[0].images, ("https://wx4.sinaimg.cn/orj480/focus.jpg",))
+        self.assertEqual(posts[2].images, ("https://wx3.sinaimg.cn/orj480/video.jpg",))
+        self.assertEqual(material.cover_image_url, "https://wx4.sinaimg.cn/orj480/focus.jpg")
+        self.assertIn("作者甲：精选正文", material.source_excerpt)
+        self.assertIn("热门视频正文", material.source_excerpt)
+        self.assertNotIn("推荐流不属于当前热搜", material.source_excerpt)
+        self.assertNotIn("右侧其他热搜", material.source_excerpt)
 
     def test_official_source_retries_top_page_once(self) -> None:
         session = FakeOfficialFetchSession(
