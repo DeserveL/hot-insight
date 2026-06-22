@@ -27,6 +27,7 @@ from backend.app.services.ai.sanitizer import sanitize_public_risk_note
 
 DEFAULT_TAG_RECURRENCE_HOURS = {"爆": 12, "沸": 12, "热": 24}
 DEFAULT_RECURRENCE_HOURS = 24
+PUBLIC_AI_ERROR_MESSAGE = "洞察生成中，请稍后查看。"
 logger = logging.getLogger(__name__)
 
 
@@ -952,9 +953,10 @@ def _topic_row_to_dict(row: sqlite3.Row, ai_record: dict | None) -> dict:
     ai_error = ""
     if ai_record:
         ai_status = str(ai_record["status"])
-        ai_error = str(ai_record["error_message"] or "")
         if ai_record["detail"] is not None:
             detail = ai_record["detail"].to_dict()
+        elif ai_status:
+            ai_error = PUBLIC_AI_ERROR_MESSAGE
     realtime_posts = _parse_realtime_posts_json(str(row["realtime_posts_json"] or "[]"))
     return {
         "id": str(row["id"]),

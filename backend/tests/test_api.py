@@ -82,6 +82,38 @@ class ApiTests(unittest.TestCase):
 
             self.assertEqual(response.status_code, 404)
 
+    def test_ai_failure_error_is_not_exposed_in_topic_api(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = Path(temp_dir) / "hot_insight.sqlite3"
+            topic = _topic("失败热点", "热")
+            raw_error = "503 Server Error: Service Unavailable for url: https://ccpa.234248.xyz/v1/responses"
+            repository = AppRepository(database_path)
+            repository.save_topics([topic])
+            repository.save_ai_insight_failure(topic, raw_error, "model")
+            record = repository.get_ai_insight_record(topic.id)
+            self.assertIn("503 Server Error", record["error_message"])
+            repository.close()
+
+            with patch.dict(
+                os.environ,
+                {"DATABASE_PATH": str(database_path), "API_SCHEDULER_ENABLED": "false", "LOG_FILE_ENABLED": "false"},
+                clear=False,
+            ):
+                with TestClient(app) as client:
+                    topics = client.get("/api/v1/topics?channel=weibo")
+                    detail = client.get(f"/api/v1/topics/{topic.id}")
+
+            self.assertEqual(topics.status_code, 200)
+            self.assertEqual(detail.status_code, 200)
+            for payload in (topics.json()["items"][0], detail.json()):
+                with self.subTest(payload=payload["id"]):
+                    self.assertEqual(payload["ai_status"], "failed")
+                    self.assertIsNone(payload["ai_detail"])
+                    self.assertEqual(payload["ai_error"], "洞察生成中，请稍后查看。")
+                    self.assertNotIn("503 Server Error", payload["ai_error"])
+                    self.assertNotIn("ccpa.234248.xyz", payload["ai_error"])
+                    self.assertNotIn("/v1/responses", payload["ai_error"])
+
 
 def _topic(title: str, tag: str) -> TopicCandidate:
     return TopicCandidate(

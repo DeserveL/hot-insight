@@ -9,6 +9,7 @@ import type { Topic, TrendsSummary } from "@/lib/types";
 import { formatDateTime, formatScore, sourceLabel } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
+const AI_PENDING_SUMMARY = "洞察生成中，请稍后查看。";
 
 export default async function HomePage() {
   const { summary, topics } = await loadHomeData();
@@ -69,7 +70,7 @@ export default async function HomePage() {
 }
 
 function FocusCard({ topic }: { topic: Topic }) {
-  const summary = topic.ai_detail?.takeaway || topic.ai_detail?.summary || topic.ai_error || "洞察生成中，请稍后查看。";
+  const summary = topic.ai_detail?.takeaway || topic.ai_detail?.summary || topic.source_excerpt || AI_PENDING_SUMMARY;
   const displayTag = topic.peak_tag || topic.tag;
   const displayRank = topic.best_rank ?? topic.rank;
   const displayScore = topic.peak_score ?? topic.score;
