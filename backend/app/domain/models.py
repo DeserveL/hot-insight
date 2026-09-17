@@ -10,6 +10,7 @@ from backend.app.core.timezone import now_iso as _now_iso
 
 
 WEIBO_CHANNEL_ID = "weibo"
+WEIBO_OFFICIAL_SOURCE_ID = "weibo_official"
 
 
 def now_iso() -> str:

@@ -1,6 +1,8 @@
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import requests
 
@@ -160,6 +162,77 @@ class ServiceTests(unittest.TestCase):
             self.assertEqual(repeat.sent_count, 0)
             self.assertEqual([topic.title for topic in notifier.sent_topics], ["爆点新闻"])
             self.assertEqual(len(ai_client.calls), 1)
+            repository.close()
+
+    def test_official_source_saves_all_hot_terms_before_track_tag_filter(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = _config(
+                temp_dir,
+                alert_tags=(),
+                track_tags=("爆",),
+                source_order=("weibo_official",),
+            )
+            repository = AppRepository(config.database_path)
+            topics = [
+                TopicCandidate(
+                    title="爆点新闻",
+                    rank=1,
+                    score=100,
+                    tag="爆",
+                    url="https://weibo.com/a/hot/a_0.html?type=grab",
+                    source_id="weibo_official",
+                    fetched_at="2026-09-17T15:00:00+08:00",
+                ),
+                TopicCandidate(
+                    title="普通词条一",
+                    rank=2,
+                    score=90,
+                    tag="",
+                    url="https://weibo.com/a/hot/b_0.html?type=grab",
+                    source_id="weibo_official",
+                    fetched_at="2026-09-17T15:00:00+08:00",
+                ),
+                TopicCandidate(
+                    title="普通词条二",
+                    rank=3,
+                    score=80,
+                    tag="",
+                    url="https://weibo.com/a/hot/c_0.html?type=grab",
+                    source_id="weibo_official",
+                    fetched_at="2026-09-17T15:00:00+08:00",
+                ),
+            ]
+
+            class FakeOfficialSource:
+                id = "weibo_official"
+                supports_tags = True
+                timeout = 15
+
+                def fetch(self):
+                    return SimpleNamespace(
+                        source_id="weibo_official",
+                        topics=topics,
+                        supports_tags=True,
+                        fetched_at="2026-09-17T15:00:00+08:00",
+                    )
+
+            with patch(
+                "backend.app.services.ingestion.service.build_weibo_sources",
+                return_value=[FakeOfficialSource()],
+            ):
+                result = run_once(
+                    config,
+                    session=FakeSession([]),
+                    repository=repository,
+                    notifier=FakeNotifier(),
+                    ai_client=FakeAIDetailClient(),
+                )
+
+            self.assertEqual(result.source_fetched_count, 3)
+            self.assertEqual(result.tracked_count, 1)
+            self.assertEqual(repository.conn.execute("SELECT COUNT(*) FROM hot_terms").fetchone()[0], 3)
+            self.assertEqual(repository.conn.execute("SELECT COUNT(*) FROM hot_term_episodes").fetchone()[0], 3)
+            self.assertEqual(repository.conn.execute("SELECT COUNT(*) FROM topics").fetchone()[0], 1)
             repository.close()
 
     def test_each_topic_is_marked_only_after_successful_delivery(self) -> None:

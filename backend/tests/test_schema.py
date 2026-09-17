@@ -41,6 +41,8 @@ class SchemaTests(unittest.TestCase):
                     "fetch_runs",
                     "topics",
                     "topic_observations",
+                    "hot_terms",
+                    "hot_term_episodes",
                     "ai_insights",
                     "notification_targets",
                     "notification_deliveries",
@@ -75,7 +77,191 @@ class SchemaTests(unittest.TestCase):
             self.assertIn("failed_retry_context_hash", ai_columns)
             self.assertIn("context_material_json", ai_columns)
             self.assertIn("search_source_count", ai_columns)
+            hot_term_columns = {row[1] for row in conn.execute("PRAGMA table_info(hot_terms)")}
+            self.assertIn("episode_count", hot_term_columns)
+            self.assertIn("peak_score", hot_term_columns)
+            self.assertIn("peak_at", hot_term_columns)
+            episode_columns = {row[1] for row in conn.execute("PRAGMA table_info(hot_term_episodes)")}
+            self.assertIn("term_id", episode_columns)
+            self.assertIn("is_active", episode_columns)
+            self.assertIn("ended_at", episode_columns)
+            indexes = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'index' AND name NOT LIKE 'sqlite_%'"
+                )
+            }
+            self.assertIn("idx_hot_terms_channel_last_seen", indexes)
+            self.assertIn("idx_hot_terms_channel_peak_score", indexes)
+            self.assertIn("idx_hot_term_episodes_term_started", indexes)
+            self.assertIn("idx_hot_term_episodes_channel_active", indexes)
             conn.close()
+
+    def test_save_hot_terms_stores_all_official_topics_with_one_term_and_episode(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repository = AppRepository(Path(temp_dir) / "hot_insight.sqlite3")
+            topics = [
+                TopicCandidate(
+                    title=f"官方词条 {index}",
+                    rank=index,
+                    score=index * 1000,
+                    tag="爆" if index == 1 else "",
+                    url=f"https://weibo.com/a/hot/{index}_0.html?type=grab",
+                    source_id="weibo_official",
+                    fetched_at="2026-09-17T15:00:00+08:00",
+                )
+                for index in range(1, 51)
+            ]
+
+            stats = repository.save_hot_terms(topics)
+
+            self.assertEqual(stats.total_count, 50)
+            self.assertEqual(stats.new_term_count, 50)
+            self.assertEqual(stats.new_episode_count, 50)
+            self.assertEqual(repository.conn.execute("SELECT COUNT(*) FROM hot_terms").fetchone()[0], 50)
+            self.assertEqual(repository.conn.execute("SELECT COUNT(*) FROM hot_term_episodes").fetchone()[0], 50)
+            self.assertEqual(
+                repository.conn.execute(
+                    "SELECT COUNT(*) FROM hot_terms WHERE total_seen_count = 1 AND episode_count = 1"
+                ).fetchone()[0],
+                50,
+            )
+            repository.close()
+
+    def test_save_hot_terms_ignores_non_official_sources_and_normalizes_titles(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repository = AppRepository(Path(temp_dir) / "hot_insight.sqlite3")
+            fallback_topic = TopicCandidate(
+                title="备用词条",
+                rank=1,
+                score=100,
+                tag="爆",
+                url="https://example.com/a",
+                source_id="xunjinlu",
+                fetched_at="2026-09-17T15:00:00+08:00",
+            )
+
+            stats = repository.save_hot_terms([fallback_topic])
+
+            self.assertEqual(stats.total_count, 0)
+            self.assertEqual(repository.conn.execute("SELECT COUNT(*) FROM hot_terms").fetchone()[0], 0)
+
+            first = TopicCandidate(
+                title="  官方   词条 ",
+                rank=1,
+                score=100,
+                tag="",
+                url="https://weibo.com/a/hot/a_0.html?type=grab",
+                source_id="weibo_official",
+                fetched_at="2026-09-17T15:00:00+08:00",
+            )
+            duplicate = TopicCandidate(
+                title="官方 词条",
+                rank=2,
+                score=200,
+                tag="",
+                url="https://weibo.com/a/hot/a_1.html?type=grab",
+                source_id="weibo_official",
+                fetched_at="2026-09-17T15:00:00+08:00",
+            )
+
+            stats = repository.save_hot_terms([first, duplicate])
+
+            self.assertEqual(stats.total_count, 1)
+            self.assertEqual(repository.conn.execute("SELECT COUNT(*) FROM hot_terms").fetchone()[0], 1)
+            self.assertEqual(repository.conn.execute("SELECT COUNT(*) FROM hot_term_episodes").fetchone()[0], 1)
+            repository.close()
+
+    def test_hot_term_continuous_run_updates_seen_count_and_peak_once(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repository = AppRepository(Path(temp_dir) / "hot_insight.sqlite3")
+
+            repository.save_hot_terms(
+                [_hot_topic_at("连续词条", "2026-09-17T00:00:00+08:00", rank=10, score=100)]
+            )
+            repository.save_hot_terms(
+                [_hot_topic_at("连续词条", "2026-09-17T23:00:00+08:00", rank=1, score=300, tag="爆")]
+            )
+            stats = repository.save_hot_terms(
+                [_hot_topic_at("连续词条", "2026-09-18T00:00:00+08:00", rank=2, score=200, tag="")]
+            )
+
+            term = repository.conn.execute(
+                "SELECT * FROM hot_terms WHERE title_key = '连续词条'"
+            ).fetchone()
+            episode = repository.conn.execute(
+                "SELECT * FROM hot_term_episodes WHERE term_id = ?", (term["id"],)
+            ).fetchone()
+
+            self.assertEqual(stats.new_episode_count, 0)
+            self.assertEqual(term["total_seen_count"], 3)
+            self.assertEqual(term["episode_count"], 1)
+            self.assertEqual(term["best_rank"], 1)
+            self.assertEqual(term["peak_score"], 300)
+            self.assertEqual(term["peak_rank"], 1)
+            self.assertEqual(term["peak_tag"], "爆")
+            self.assertEqual(term["peak_at"], "2026-09-17T23:00:00+08:00")
+            self.assertEqual(episode["seen_count"], 3)
+            self.assertEqual(episode["is_active"], 1)
+            self.assertEqual(episode["ended_at"], "")
+            self.assertEqual(episode["best_rank"], 1)
+            self.assertEqual(episode["peak_score"], 300)
+            repository.close()
+
+    def test_hot_term_creates_new_episode_after_gap(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repository = AppRepository(Path(temp_dir) / "hot_insight.sqlite3")
+
+            repository.save_hot_terms([_hot_topic_at("复现词条", "2026-09-17T00:00:00+08:00")])
+            repository.save_hot_terms([_hot_topic_at("复现词条", "2026-09-17T23:00:00+08:00")])
+            stats = repository.save_hot_terms([_hot_topic_at("复现词条", "2026-09-18T23:01:00+08:00")])
+
+            term = repository.conn.execute(
+                "SELECT * FROM hot_terms WHERE title_key = '复现词条'"
+            ).fetchone()
+            episodes = repository.conn.execute(
+                "SELECT * FROM hot_term_episodes WHERE term_id = ? ORDER BY started_at",
+                (term["id"],),
+            ).fetchall()
+
+            self.assertEqual(stats.new_episode_count, 1)
+            self.assertEqual(stats.closed_episode_count, 1)
+            self.assertEqual(term["total_seen_count"], 3)
+            self.assertEqual(term["episode_count"], 2)
+            self.assertEqual(len(episodes), 2)
+            self.assertEqual(episodes[0]["ended_at"], "2026-09-17T23:00:00+08:00")
+            self.assertEqual(episodes[0]["is_active"], 0)
+            self.assertEqual(episodes[1]["started_at"], "2026-09-18T23:01:00+08:00")
+            self.assertEqual(episodes[1]["is_active"], 1)
+            repository.close()
+
+    def test_hot_term_episode_closes_when_absent_after_gap(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repository = AppRepository(Path(temp_dir) / "hot_insight.sqlite3")
+
+            repository.save_hot_terms(
+                [
+                    _hot_topic_at("在榜词条", "2026-09-17T00:00:00+08:00"),
+                    _hot_topic_at("消失词条", "2026-09-17T00:00:00+08:00"),
+                ]
+            )
+            repository.save_hot_terms([_hot_topic_at("在榜词条", "2026-09-17T23:00:00+08:00")])
+            stats = repository.save_hot_terms(
+                [_hot_topic_at("在榜词条", "2026-09-18T01:00:00+08:00")]
+            )
+            episode = repository.conn.execute(
+                """
+                SELECT e.*
+                FROM hot_term_episodes e
+                JOIN hot_terms t ON t.id = e.term_id
+                WHERE t.title_key = '消失词条'
+                """
+            ).fetchone()
+
+            self.assertEqual(stats.closed_episode_count, 1)
+            self.assertEqual(episode["ended_at"], "2026-09-17T00:00:00+08:00")
+            self.assertEqual(episode["is_active"], 0)
+            repository.close()
 
     def test_migrates_legacy_topics_with_tag_specific_recurrence_window(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -348,6 +534,25 @@ def _topic_at(title: str, tag: str, fetched_at: str, *, rank: int = 1, score: in
         tag=tag,
         url="https://s.weibo.com/weibo?q=test",
         source_id="test",
+        fetched_at=fetched_at,
+    )
+
+
+def _hot_topic_at(
+    title: str,
+    fetched_at: str,
+    *,
+    rank: int = 10,
+    score: int = 100,
+    tag: str = "",
+) -> TopicCandidate:
+    return TopicCandidate(
+        title=title,
+        rank=rank,
+        score=score,
+        tag=tag,
+        url=f"https://weibo.com/a/hot/{title}_0.html?type=grab",
+        source_id="weibo_official",
         fetched_at=fetched_at,
     )
 

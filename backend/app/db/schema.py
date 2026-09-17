@@ -80,6 +80,65 @@ CREATE TABLE IF NOT EXISTS topic_observations (
 CREATE INDEX IF NOT EXISTS idx_topic_observations_topic
     ON topic_observations(topic_id, observed_at DESC);
 
+CREATE TABLE IF NOT EXISTS hot_terms (
+    id TEXT PRIMARY KEY,
+    channel_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    title_key TEXT NOT NULL,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    total_seen_count INTEGER NOT NULL DEFAULT 1,
+    episode_count INTEGER NOT NULL DEFAULT 1,
+    best_rank INTEGER,
+    peak_score INTEGER,
+    peak_rank INTEGER,
+    peak_tag TEXT NOT NULL DEFAULT '',
+    peak_at TEXT NOT NULL DEFAULT '',
+    peak_url TEXT NOT NULL DEFAULT '',
+    latest_url TEXT NOT NULL DEFAULT '',
+    source_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(channel_id, title_key),
+    FOREIGN KEY(channel_id) REFERENCES channels(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_hot_terms_channel_last_seen
+    ON hot_terms(channel_id, last_seen_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_hot_terms_channel_peak_score
+    ON hot_terms(channel_id, peak_score DESC);
+
+CREATE TABLE IF NOT EXISTS hot_term_episodes (
+    id TEXT PRIMARY KEY,
+    term_id TEXT NOT NULL,
+    channel_id TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    ended_at TEXT NOT NULL DEFAULT '',
+    is_active INTEGER NOT NULL DEFAULT 1,
+    seen_count INTEGER NOT NULL DEFAULT 1,
+    best_rank INTEGER,
+    peak_score INTEGER,
+    peak_rank INTEGER,
+    peak_tag TEXT NOT NULL DEFAULT '',
+    peak_at TEXT NOT NULL DEFAULT '',
+    peak_url TEXT NOT NULL DEFAULT '',
+    latest_url TEXT NOT NULL DEFAULT '',
+    source_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(term_id, started_at),
+    FOREIGN KEY(term_id) REFERENCES hot_terms(id),
+    FOREIGN KEY(channel_id) REFERENCES channels(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_hot_term_episodes_term_started
+    ON hot_term_episodes(term_id, started_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_hot_term_episodes_channel_active
+    ON hot_term_episodes(channel_id, is_active, last_seen_at DESC);
+
 CREATE TABLE IF NOT EXISTS ai_insights (
     topic_id TEXT PRIMARY KEY,
     channel_id TEXT NOT NULL,

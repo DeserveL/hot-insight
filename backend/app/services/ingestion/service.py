@@ -11,7 +11,13 @@ import requests
 from backend.app.core.config import AppConfig
 from backend.app.core.logging import logging_run, mask_external_target, redact_sensitive_text
 from backend.app.db.repositories import AppRepository
-from backend.app.domain.models import AIDetail, TopicCandidate, WEIBO_CHANNEL_ID, now_iso
+from backend.app.domain.models import (
+    AIDetail,
+    TopicCandidate,
+    WEIBO_CHANNEL_ID,
+    WEIBO_OFFICIAL_SOURCE_ID,
+    now_iso,
+)
 from backend.app.services.ai.detail_client import AIContext, AIDetailClient, build_context_hash, combine_weibo_context
 from backend.app.services.ai.context_change import (
     ContextChangeThresholds,
@@ -695,6 +701,24 @@ def _fetch_business_topics(
             if source.supports_tags:
                 tagged_failures.append(f"{source.id}: {error_message}")
             continue
+
+        if result.source_id == WEIBO_OFFICIAL_SOURCE_ID:
+            hot_term_stats = repository.save_hot_terms(
+                result.topics,
+                episode_gap_hours=config.hot_term_episode_gap_hours,
+            )
+            logger.info(
+                (
+                    "官方热搜全量词条入库完成: total=%s updated=%s new_terms=%s "
+                    "new_episodes=%s closed_episodes=%s gap_hours=%s"
+                ),
+                hot_term_stats.total_count,
+                hot_term_stats.updated_count,
+                hot_term_stats.new_term_count,
+                hot_term_stats.new_episode_count,
+                hot_term_stats.closed_episode_count,
+                config.hot_term_episode_gap_hours,
+            )
 
         tracked_topics = filter_track_topics(result.topics, config.track_tags)
         tracked_topics = _enrich_official_source_material(config, session, tracked_topics)

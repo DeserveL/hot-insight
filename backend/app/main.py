@@ -122,6 +122,7 @@ def runtime_config_summary(config: AppConfig, scheduler_enabled: bool) -> dict[s
         "weibo_mobile_max_retries": config.weibo_mobile_max_retries,
         "track_tags": list(config.track_tags),
         "alert_tags": list(config.alert_tags),
+        "hot_term_episode_gap_hours": config.hot_term_episode_gap_hours,
         "notify_channels": list(config.notify_channels),
         "wecom_enabled": config.wecom.enabled,
         "wecom_health_alerts": config.wecom.health_alerts,

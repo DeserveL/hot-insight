@@ -14,6 +14,7 @@ from backend.app.core.timezone import DEFAULT_TIME_ZONE, get_app_zoneinfo
 DEFAULT_TRACK_TAGS = ("爆", "沸", "热")
 DEFAULT_ALERT_TAGS = ("爆", "沸")
 DEFAULT_TAG_RECURRENCE_HOURS = {"爆": 12, "沸": 12, "热": 24}
+DEFAULT_HOT_TERM_EPISODE_GAP_HOURS = 24
 DEFAULT_WEIBO_SOURCE_ORDER = ("weibo_official", "xk", "xunjinlu", "xxapi", "nsuuu")
 DEFAULT_NOTIFICATION_COVER = Path("backend/app/assets/notification-covers/default-cover.png")
 
@@ -80,6 +81,7 @@ class AppConfig:
     track_tags: tuple[str, ...] = DEFAULT_TRACK_TAGS
     alert_tags: tuple[str, ...] = DEFAULT_ALERT_TAGS
     tag_recurrence_hours: dict[str, int] = field(default_factory=lambda: dict(DEFAULT_TAG_RECURRENCE_HOURS))
+    hot_term_episode_gap_hours: int = DEFAULT_HOT_TERM_EPISODE_GAP_HOURS
     notify_channels: tuple[str, ...] = ("wecom", "telegram")
     public_site_url: str = ""
     max_topics_per_run: int = 10
@@ -117,6 +119,10 @@ class AppConfig:
             tag_recurrence_hours=_tag_recurrence_env(
                 os.getenv("TAG_RECURRENCE_HOURS"),
                 DEFAULT_TAG_RECURRENCE_HOURS,
+            ),
+            hot_term_episode_gap_hours=max(
+                _int_env("HOT_TERM_EPISODE_GAP_HOURS", DEFAULT_HOT_TERM_EPISODE_GAP_HOURS),
+                1,
             ),
             notify_channels=_split_csv(os.getenv("NOTIFY_CHANNELS"), ("wecom", "telegram")),
             public_site_url=os.getenv("PUBLIC_SITE_URL", "").strip().rstrip("/"),

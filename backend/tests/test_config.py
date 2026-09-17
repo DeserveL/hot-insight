@@ -14,6 +14,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.track_tags, ("爆", "沸", "热"))
         self.assertEqual(config.alert_tags, ("爆", "沸"))
         self.assertEqual(config.tag_recurrence_hours, {"爆": 12, "沸": 12, "热": 24})
+        self.assertEqual(config.hot_term_episode_gap_hours, 24)
         self.assertEqual(config.database_path, Path("data/hot_insight.sqlite3"))
         self.assertEqual(config.app_time_zone, "Asia/Shanghai")
         self.assertEqual(config.weibo_source_order[0], "weibo_official")
@@ -54,6 +55,12 @@ class ConfigTests(unittest.TestCase):
         with patch.dict(os.environ, {"TAG_RECURRENCE_HOURS": "爆"}, clear=True):
             with self.assertRaisesRegex(ValueError, "TAG_RECURRENCE_HOURS"):
                 AppConfig.from_env(env_file=None)
+
+    def test_hot_term_episode_gap_hours_is_configurable(self) -> None:
+        with patch.dict(os.environ, {"HOT_TERM_EPISODE_GAP_HOURS": "48"}, clear=True):
+            config = AppConfig.from_env(env_file=None)
+
+        self.assertEqual(config.hot_term_episode_gap_hours, 48)
 
     def test_source_order_uses_weibo_specific_name(self) -> None:
         with patch.dict(os.environ, {"WEIBO_SOURCE_ORDER": "xunjinlu,xk"}, clear=True):

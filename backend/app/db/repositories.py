@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from hashlib import sha1
 from pathlib import Path
@@ -17,6 +17,7 @@ from backend.app.domain.models import (
     AIDetail,
     TopicCandidate,
     WEIBO_CHANNEL_ID,
+    WEIBO_OFFICIAL_SOURCE_ID,
     make_topic_id,
     normalize_title_key,
     now_iso,
@@ -29,6 +30,15 @@ DEFAULT_TAG_RECURRENCE_HOURS = {"爆": 12, "沸": 12, "热": 24}
 DEFAULT_RECURRENCE_HOURS = 24
 PUBLIC_AI_ERROR_MESSAGE = "洞察生成中，请稍后查看。"
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class HotTermRunStats:
+    total_count: int
+    updated_count: int
+    new_term_count: int
+    new_episode_count: int
+    closed_episode_count: int
 
 
 class AppRepository:
@@ -195,6 +205,266 @@ class AppRepository:
             (finished_at, status, message, topic_count, 1 if supports_tags else 0, source_id),
         )
         self.conn.commit()
+
+    def save_hot_terms(
+        self,
+        topics: list[TopicCandidate],
+        *,
+        episode_gap_hours: int = 24,
+    ) -> HotTermRunStats:
+        official_topics = [
+            topic
+            for topic in topics
+            if topic.channel_id == WEIBO_CHANNEL_ID and topic.source_id == WEIBO_OFFICIAL_SOURCE_ID
+        ]
+        if not official_topics:
+            return HotTermRunStats(0, 0, 0, 0, 0)
+
+        self.ensure_channel(WEIBO_CHANNEL_ID, "微博热搜")
+        self.ensure_source(
+            channel_id=WEIBO_CHANNEL_ID,
+            source_id=WEIBO_OFFICIAL_SOURCE_ID,
+            supports_tags=True,
+        )
+
+        topics_by_key: dict[str, TopicCandidate] = {}
+        for topic in official_topics:
+            topics_by_key[normalize_title_key(topic.title)] = topic
+
+        current_datetimes = [_parse_datetime(topic.fetched_at) for topic in topics_by_key.values()]
+        current_run_at = max(
+            (value for value in current_datetimes if value is not None),
+            default=None,
+        )
+        current_term_ids: set[str] = set()
+        new_term_count = 0
+        new_episode_count = 0
+        closed_episode_count = 0
+        updated_count = 0
+
+        for title_key, topic in topics_by_key.items():
+            now = now_iso()
+            term_row = self.conn.execute(
+                """
+                SELECT *
+                FROM hot_terms
+                WHERE channel_id = ? AND title_key = ?
+                """,
+                (WEIBO_CHANNEL_ID, title_key),
+            ).fetchone()
+            term_id = str(term_row["id"]) if term_row is not None else _hot_term_id(title_key)
+            current_term_ids.add(term_id)
+
+            episode_row = self.conn.execute(
+                """
+                SELECT *
+                FROM hot_term_episodes
+                WHERE term_id = ?
+                ORDER BY started_at DESC
+                LIMIT 1
+                """,
+                (term_id,),
+            ).fetchone()
+
+            should_create_episode = True
+            if episode_row is not None and bool(episode_row["is_active"]):
+                episode_last_seen = _parse_datetime(str(episode_row["last_seen_at"]))
+                current_seen_at = _parse_datetime(topic.fetched_at)
+                within_gap = (
+                    current_seen_at is not None
+                    and episode_last_seen is not None
+                    and current_seen_at - episode_last_seen <= timedelta(hours=episode_gap_hours)
+                )
+                if within_gap:
+                    should_create_episode = False
+                else:
+                    self.conn.execute(
+                        """
+                        UPDATE hot_term_episodes
+                        SET ended_at = last_seen_at, is_active = 0, updated_at = ?
+                        WHERE id = ?
+                        """,
+                        (now, str(episode_row["id"])),
+                    )
+                    closed_episode_count += 1
+
+            if term_row is None:
+                new_term_count += 1
+                self.conn.execute(
+                    """
+                    INSERT INTO hot_terms
+                        (
+                            id, channel_id, title, title_key, first_seen_at, last_seen_at,
+                            total_seen_count, episode_count, best_rank, peak_score, peak_rank,
+                            peak_tag, peak_at, peak_url, latest_url, source_id,
+                            created_at, updated_at
+                        )
+                    VALUES
+                        (?, ?, ?, ?, ?, ?, 1, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        term_id,
+                        WEIBO_CHANNEL_ID,
+                        topic.title,
+                        title_key,
+                        topic.fetched_at,
+                        topic.fetched_at,
+                        topic.rank,
+                        topic.score,
+                        topic.rank,
+                        topic.tag,
+                        topic.fetched_at,
+                        topic.url,
+                        topic.url,
+                        WEIBO_OFFICIAL_SOURCE_ID,
+                        now,
+                        now,
+                    ),
+                )
+
+            if should_create_episode:
+                new_episode_count += 1
+                episode_id = _hot_term_episode_id(term_id, topic.fetched_at)
+                self.conn.execute(
+                    """
+                    INSERT INTO hot_term_episodes
+                        (
+                            id, term_id, channel_id, started_at, last_seen_at, ended_at,
+                            is_active, seen_count, best_rank, peak_score, peak_rank,
+                            peak_tag, peak_at, peak_url, latest_url, source_id,
+                            created_at, updated_at
+                        )
+                    VALUES
+                        (?, ?, ?, ?, ?, '', 1, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        episode_id,
+                        term_id,
+                        WEIBO_CHANNEL_ID,
+                        topic.fetched_at,
+                        topic.fetched_at,
+                        topic.rank,
+                        topic.score,
+                        topic.rank,
+                        topic.tag,
+                        topic.fetched_at,
+                        topic.url,
+                        topic.url,
+                        WEIBO_OFFICIAL_SOURCE_ID,
+                        now,
+                        now,
+                    ),
+                )
+            else:
+                episode_id = str(episode_row["id"])
+                best_rank = _better_rank(episode_row["best_rank"], topic.rank)
+                peak_score, peak_rank, peak_tag, peak_at, peak_url = _updated_peak_fields(
+                    episode_row["peak_score"],
+                    episode_row["peak_rank"],
+                    episode_row["peak_tag"],
+                    episode_row["peak_at"],
+                    episode_row["peak_url"],
+                    topic,
+                )
+                self.conn.execute(
+                    """
+                    UPDATE hot_term_episodes
+                    SET last_seen_at = ?, ended_at = '', is_active = 1,
+                        seen_count = seen_count + 1, best_rank = ?,
+                        peak_score = ?, peak_rank = ?, peak_tag = ?,
+                        peak_at = ?, peak_url = ?, latest_url = ?,
+                        source_id = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        topic.fetched_at,
+                        best_rank,
+                        peak_score,
+                        peak_rank,
+                        peak_tag,
+                        peak_at,
+                        peak_url,
+                        topic.url,
+                        WEIBO_OFFICIAL_SOURCE_ID,
+                        now,
+                        episode_id,
+                    ),
+                )
+
+            if term_row is not None:
+                updated_count += 1
+                best_rank = _better_rank(term_row["best_rank"], topic.rank)
+                peak_score, peak_rank, peak_tag, peak_at, peak_url = _updated_peak_fields(
+                    term_row["peak_score"],
+                    term_row["peak_rank"],
+                    term_row["peak_tag"],
+                    term_row["peak_at"],
+                    term_row["peak_url"],
+                    topic,
+                )
+                self.conn.execute(
+                    """
+                    UPDATE hot_terms
+                    SET title = ?, last_seen_at = ?,
+                        total_seen_count = total_seen_count + 1,
+                        episode_count = episode_count + ?,
+                        best_rank = ?, peak_score = ?, peak_rank = ?,
+                        peak_tag = ?, peak_at = ?, peak_url = ?,
+                        latest_url = ?, source_id = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        topic.title,
+                        topic.fetched_at,
+                        1 if should_create_episode else 0,
+                        best_rank,
+                        peak_score,
+                        peak_rank,
+                        peak_tag,
+                        peak_at,
+                        peak_url,
+                        topic.url,
+                        WEIBO_OFFICIAL_SOURCE_ID,
+                        now,
+                        term_id,
+                    ),
+                )
+
+        active_episodes = self.conn.execute(
+            """
+            SELECT id, term_id, last_seen_at
+            FROM hot_term_episodes
+            WHERE channel_id = ? AND source_id = ? AND is_active = 1
+            """,
+            (WEIBO_CHANNEL_ID, WEIBO_OFFICIAL_SOURCE_ID),
+        ).fetchall()
+        for episode in active_episodes:
+            if str(episode["term_id"]) in current_term_ids:
+                continue
+            last_seen = _parse_datetime(str(episode["last_seen_at"]))
+            if (
+                current_run_at is not None
+                and last_seen is not None
+                and current_run_at - last_seen > timedelta(hours=episode_gap_hours)
+            ):
+                self.conn.execute(
+                    """
+                    UPDATE hot_term_episodes
+                    SET ended_at = last_seen_at, is_active = 0, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (now_iso(), str(episode["id"])),
+                )
+                closed_episode_count += 1
+
+        self.conn.commit()
+        return HotTermRunStats(
+            total_count=len(topics_by_key),
+            updated_count=updated_count,
+            new_term_count=new_term_count,
+            new_episode_count=new_episode_count,
+            closed_episode_count=closed_episode_count,
+        )
 
     def save_topics(
         self,
@@ -867,6 +1137,35 @@ class AppRepository:
 
 def make_target_id(provider: str, target: str) -> str:
     return sha1(f"{provider}:{target}".encode("utf-8")).hexdigest()
+
+
+def _hot_term_id(title_key: str) -> str:
+    return sha1(f"hot_term:{WEIBO_CHANNEL_ID}:{title_key}".encode("utf-8")).hexdigest()
+
+
+def _hot_term_episode_id(term_id: str, started_at: str) -> str:
+    return sha1(f"hot_term_episode:{term_id}:{started_at}".encode("utf-8")).hexdigest()
+
+
+def _better_rank(current: int | None, incoming: int | None) -> int | None:
+    if incoming is None:
+        return current
+    if current is None or incoming < current:
+        return incoming
+    return current
+
+
+def _updated_peak_fields(
+    current_score: int | None,
+    current_rank: int | None,
+    current_tag: str,
+    current_at: str,
+    current_url: str,
+    topic: TopicCandidate,
+) -> tuple[int | None, int | None, str, str, str]:
+    if topic.score is None or (current_score is not None and topic.score <= current_score):
+        return current_score, current_rank, current_tag, current_at, current_url
+    return topic.score, topic.rank, topic.tag, topic.fetched_at, topic.url
 
 
 def _topic_params(topic: TopicCandidate) -> dict:
