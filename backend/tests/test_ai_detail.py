@@ -12,11 +12,21 @@ from backend.app.services.ai.detail_client import (
     AIDetailClient,
     build_context_hash,
     build_user_prompt,
+    normalize_source_url,
     parse_responses_detail,
     parse_chat_completion_detail,
     sanitize_ai_detail,
 )
 from backend.app.services.ai.prompts import PROMPT_VERSION, SYSTEM_PROMPT
+from backend.app.services.ai.skills import (
+    EVENT_PROFILE_ENTERTAINMENT,
+    EVENT_PROFILE_OFFICIAL,
+    EVENT_PROFILE_PUBLIC,
+    EVENT_PROFILE_SPORTS,
+    EVENT_PROFILE_VERIFICATION,
+    classify_event_profile,
+    resolve_search_mode,
+)
 from backend.app.services.ai.context_change import (
     ContextChangeThresholds,
     build_context_material_snapshot,
@@ -86,6 +96,51 @@ class AIDetailTests(unittest.TestCase):
 
         self.assertTrue(result.ok)
         self.assertEqual(session.posts[0]["json"]["tool_choice"], "required")
+
+    def test_ai_success_log_contains_deduped_source_count(self) -> None:
+        session = FakeSession([FakeResponse(_responses_payload())])
+        client = AIDetailClient(_config(api_mode="responses", external_search="required"), session=session)
+
+        with self.assertLogs("backend.app.services.ai.detail_client", level="INFO") as logs:
+            result = client.generate(_topic())
+
+        self.assertTrue(result.ok)
+        self.assertIn("deduped_sources=1", "\n".join(logs.output))
+
+    def test_responses_auto_search_enables_required_tools_for_explosive_topic(self) -> None:
+        session = FakeSession([FakeResponse(_responses_payload())])
+        client = AIDetailClient(_config(api_mode="responses", external_search="auto"), session=session)
+
+        result = client.generate(_topic(title="普通商业新闻", tag="爆"))
+
+        self.assertTrue(result.ok)
+        self.assertEqual(session.posts[0]["json"]["tools"], [{"type": "web_search"}])
+        self.assertEqual(session.posts[0]["json"]["include"], ["web_search_call.action.sources"])
+        self.assertEqual(session.posts[0]["json"]["tool_choice"], "required")
+        self.assertIn("外部搜索策略", session.posts[0]["json"]["input"])
+
+    def test_responses_auto_search_skips_normal_hot_topic(self) -> None:
+        session = FakeSession([FakeResponse(_responses_payload())])
+        client = AIDetailClient(_config(api_mode="responses", external_search="auto"), session=session)
+
+        result = client.generate(_topic(title="普通商业新闻", tag="热"))
+
+        self.assertTrue(result.ok)
+        self.assertNotIn("tools", session.posts[0]["json"])
+        self.assertNotIn("tool_choice", session.posts[0]["json"])
+        self.assertIn("未启用外部搜索", session.posts[0]["json"]["input"])
+
+    def test_chat_completions_auto_high_search_includes_web_search_options(self) -> None:
+        session = FakeSession([FakeResponse(_ai_payload())])
+        client = AIDetailClient(
+            _config(api_mode="chat_completions", external_search="auto", web_search_options=None),
+            session=session,
+        )
+
+        result = client.generate(_topic(title="某地发生地震", tag="热"))
+
+        self.assertTrue(result.ok)
+        self.assertEqual(session.posts[0]["json"]["web_search_options"], {})
 
     def test_chat_completions_optional_search_includes_web_search_options(self) -> None:
         session = FakeSession([FakeResponse(_ai_payload())])
@@ -159,6 +214,86 @@ class AIDetailTests(unittest.TestCase):
         self.assertEqual(parsed.json_source_count, 1)
         self.assertEqual([source.url for source in parsed.detail.sources], ["https://s.weibo.com/weibo?q=test", "https://news.example.com/a"])
 
+    def test_normalize_source_url_removes_tracking_parameters(self) -> None:
+        normalized = normalize_source_url(
+            "HTTPS://Example.COM/a/?utm_source=openai&b=2&spm=weibo&from=search"
+        )
+
+        self.assertEqual(normalized, "https://example.com/a?b=2")
+
+    def test_responses_sources_are_deduplicated_after_url_normalization(self) -> None:
+        payload = {
+            "output_text": json.dumps(
+                {
+                    "summary": "摘要",
+                    "takeaway": "一句话结论",
+                    "facts": ["事实"],
+                    "commentary": "评价",
+                    "risk_note": "",
+                    "sources": [],
+                    "confidence": "low",
+                },
+                ensure_ascii=False,
+            ),
+            "output": [
+                {
+                    "type": "web_search_call",
+                    "action": {
+                        "sources": [
+                            {"title": "来源A", "url": "https://news.example.com/a?utm_source=openai"},
+                            {"title": "来源A重复", "url": "https://NEWS.example.com/a/?spm=weibo"},
+                            {"title": "来源B", "url": "https://news.example.com/b?from=search"},
+                        ]
+                    },
+                }
+            ],
+        }
+
+        parsed = parse_responses_detail(payload)
+
+        self.assertEqual(parsed.search_source_count, 3)
+        self.assertEqual(parsed.deduped_source_count, 2)
+        self.assertEqual(
+            [source.url for source in parsed.detail.sources],
+            ["https://news.example.com/a", "https://news.example.com/b"],
+        )
+
+    def test_responses_sources_do_not_merge_same_title_with_different_urls(self) -> None:
+        payload = {
+            "output_text": json.dumps(
+                {
+                    "summary": "摘要",
+                    "takeaway": "一句话结论",
+                    "facts": ["事实"],
+                    "commentary": "评价",
+                    "risk_note": "",
+                    "sources": [],
+                    "confidence": "low",
+                },
+                ensure_ascii=False,
+            ),
+            "output": [
+                {
+                    "type": "web_search_call",
+                    "action": {
+                        "sources": [
+                            {"title": "同名来源", "url": "https://news.example.com/a"},
+                            {"title": "同名来源", "url": "https://news.example.com/b"},
+                        ]
+                    },
+                }
+            ],
+        }
+
+        parsed = parse_responses_detail(payload)
+
+        self.assertEqual(parsed.search_source_count, 2)
+        self.assertEqual(parsed.deduped_source_count, 2)
+        self.assertEqual(
+            [source.url for source in parsed.detail.sources],
+            ["https://news.example.com/a", "https://news.example.com/b"],
+        )
+
     def test_user_prompt_can_include_official_context(self) -> None:
         prompt = build_user_prompt(_topic(), official_context="微博官方详情页内容")
 
@@ -167,14 +302,64 @@ class AIDetailTests(unittest.TestCase):
         self.assertIn("公开内容摘要", prompt)
         self.assertIn("精选微博", prompt)
 
+    def test_event_profiles_are_classified_by_title_and_context(self) -> None:
+        cases = (
+            ("某地发生地震", EVENT_PROFILE_PUBLIC),
+            ("某品牌正式回应产品争议", EVENT_PROFILE_OFFICIAL),
+            ("网传某消息为不实信息", EVENT_PROFILE_VERIFICATION),
+            ("某球队晋级决赛", EVENT_PROFILE_SPORTS),
+            ("某剧组发布新剧照", EVENT_PROFILE_ENTERTAINMENT),
+        )
+
+        for title, expected_profile in cases:
+            with self.subTest(title=title):
+                self.assertEqual(classify_event_profile(_topic(title=title, tag="热")), expected_profile)
+
+    def test_auto_search_uses_profile_and_tag(self) -> None:
+        self.assertEqual(
+            resolve_search_mode("auto", _topic(title="普通商业新闻", tag="热"), EVENT_PROFILE_ENTERTAINMENT),
+            "off",
+        )
+        self.assertEqual(
+            resolve_search_mode("auto", _topic(title="普通商业新闻", tag="爆"), EVENT_PROFILE_ENTERTAINMENT),
+            "auto_high",
+        )
+        self.assertEqual(
+            resolve_search_mode("auto", _topic(title="普通商业新闻", tag="热"), EVENT_PROFILE_PUBLIC),
+            "auto_high",
+        )
+
+    def test_skill_prompts_focus_on_reader_value(self) -> None:
+        public_prompt = build_user_prompt(
+            _topic(title="某地发生地震", tag="热"),
+            search_enabled=True,
+        )
+        official_prompt = build_user_prompt(
+            _topic(title="某机构发布情况说明", tag="热"),
+            search_enabled=True,
+        )
+
+        self.assertIn("安全措施", public_prompt)
+        self.assertIn("应急管理部门", public_prompt)
+        self.assertIn("外部搜索策略", public_prompt)
+        self.assertIn("当前事件时间", public_prompt)
+        self.assertIn("近 7 天", public_prompt)
+        self.assertIn("旧来源只能作为背景", public_prompt)
+        self.assertIn("谁发布了信息", official_prompt)
+        self.assertIn("适用范围", official_prompt)
+
     def test_prompt_guides_reader_facing_output_without_source_layer_wording(self) -> None:
         prompt = build_user_prompt(_topic(), official_context="公开说明内容")
         readable_prompt = prompt.split("结构化数据：", 1)[0]
 
-        self.assertEqual(PROMPT_VERSION, "2026-06-19-content-v1")
+        self.assertEqual(PROMPT_VERSION, "2026-09-17-reader-brief-v2")
+        self.assertIn("本条热点的分析重点", readable_prompt)
+        self.assertIn("读者价值", readable_prompt)
+        self.assertIn("值班编辑", SYSTEM_PROMPT)
+        self.assertIn("没有实际风险时必须返回空字符串", SYSTEM_PROMPT)
         self.assertNotIn("请改写成", readable_prompt)
         self.assertIn("也不要出现", readable_prompt)
-        self.assertIn("关键事实只写可从输入材料或可靠来源确认的信息", SYSTEM_PROMPT)
+        self.assertIn("关键事实要能对应输入材料、当事方发布、权威媒体或平台公开信息", SYSTEM_PROMPT)
         self.assertNotIn("请改写成“微博官方详情”“微博移动端讨论”“实时帖子”等自然中文", readable_prompt)
 
     def test_context_hash_ignores_rank_url_and_mobile_content_jitter(self) -> None:
@@ -286,7 +471,7 @@ class AIDetailTests(unittest.TestCase):
         sanitized = sanitize_ai_detail(detail)
 
         self.assertNotIn("搜索工具", sanitized.risk_note)
-        self.assertIn("后续公开说明", sanitized.risk_note)
+        self.assertEqual(sanitized.risk_note, "")
 
     def test_sanitize_risk_note_hides_internal_context_field_names(self) -> None:
         for term in ("mobile_context", "official_context", "realtime_posts", "weibo_context"):
@@ -296,7 +481,7 @@ class AIDetailTests(unittest.TestCase):
                 sanitized = sanitize_ai_detail(detail)
 
                 self.assertNotIn(term, sanitized.risk_note)
-                self.assertIn("后续公开说明", sanitized.risk_note)
+                self.assertEqual(sanitized.risk_note, "")
 
     def test_sanitize_generated_risk_note_rewrites_source_layer_wording(self) -> None:
         detail = parse_chat_completion_detail(_ai_payload(risk_note="微博移动端讨论材料不足，仍需以后续公开说明为准。"))
@@ -334,6 +519,13 @@ class AIDetailTests(unittest.TestCase):
         self.assertIn("相关公开内容", sanitized.summary)
         self.assertIn("公开讨论", sanitized.commentary)
 
+    def test_sanitize_keeps_empty_risk_note_empty(self) -> None:
+        detail = parse_chat_completion_detail(_ai_payload(risk_note=""))
+
+        sanitized = sanitize_ai_detail(detail)
+
+        self.assertEqual(sanitized.risk_note, "")
+
     def test_sanitize_generated_detail_hides_context_keys_in_all_fields(self) -> None:
         detail = parse_chat_completion_detail(
             _ai_payload(
@@ -360,7 +552,7 @@ class AIDetailTests(unittest.TestCase):
             with self.subTest(term=term):
                 self.assertNotIn(term, combined)
         self.assertEqual(sanitized.facts, [])
-        self.assertIn("后续公开说明", sanitized.risk_note)
+        self.assertEqual(sanitized.risk_note, "")
 
     def test_ai_insight_storage_success_and_failure_records(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -426,7 +618,7 @@ class AIDetailTests(unittest.TestCase):
 
             self.assertEqual(record["status"], "success")
             self.assertNotIn("mobile_context", record["detail"].risk_note)
-            self.assertIn("后续公开说明", record["detail"].risk_note)
+            self.assertEqual(record["detail"].risk_note, "")
             self.assertEqual(record["context_hash"], "hash-a")
             repository.close()
 
@@ -483,12 +675,16 @@ def _config(
     )
 
 
-def _topic(title: str = "测试热搜", url: str = "https://s.weibo.com/weibo?q=test") -> TopicCandidate:
+def _topic(
+    title: str = "测试热搜",
+    url: str = "https://s.weibo.com/weibo?q=test",
+    tag: str = "爆",
+) -> TopicCandidate:
     return TopicCandidate(
         title=title,
         rank=1,
         score=100000,
-        tag="爆",
+        tag=tag,
         url=url,
         source_id="test",
         fetched_at="2026-06-09T18:00:00+08:00",

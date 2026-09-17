@@ -63,7 +63,7 @@ class AIDetailConfig:
     max_retries: int = 3
     timeout_seconds: int = 60
     temperature: float = 0.2
-    external_search: str = "off"
+    external_search: str = "auto"
     context_change_similarity_threshold: float = 0.92
     context_change_length_delta: int = 160
     context_change_length_ratio: float = 0.25
@@ -200,7 +200,7 @@ def _load_ai_detail_config() -> AIDetailConfig:
         max_retries=max(_int_env("AI_DETAIL_MAX_RETRIES", 3), 1),
         timeout_seconds=max(_int_env("AI_DETAIL_TIMEOUT_SECONDS", 60), 1),
         temperature=_float_env("AI_DETAIL_TEMPERATURE", 0.2),
-        external_search=_external_search_env(os.getenv("AI_DETAIL_EXTERNAL_SEARCH", "off")),
+        external_search=_external_search_env(os.getenv("AI_DETAIL_EXTERNAL_SEARCH", "auto")),
         context_change_similarity_threshold=max(
             min(_float_env("AI_DETAIL_CONTEXT_CHANGE_SIMILARITY_THRESHOLD", 0.92), 1.0),
             0.0,
@@ -299,7 +299,10 @@ def _json_env(name: str, default: dict[str, Any] | None) -> dict[str, Any] | Non
 
 
 def _external_search_env(value: str | None) -> str:
-    normalized = (value or "off").strip().lower() or "off"
-    if normalized not in {"off", "optional", "required"}:
-        return "off"
+    normalized = (value or "auto").strip().lower() or "auto"
+    if normalized not in {"off", "optional", "required", "auto"}:
+        raise ValueError(
+            "AI_DETAIL_EXTERNAL_SEARCH must be one of off, optional, required, auto, "
+            f"got {normalized!r}"
+        )
     return normalized

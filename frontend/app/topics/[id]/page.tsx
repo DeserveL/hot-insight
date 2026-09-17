@@ -219,10 +219,12 @@ function AIDetailView({ topic }: { topic: Topic }) {
       <Section title="观察">
         <p>{detail.commentary || "未能确认"}</p>
       </Section>
-      <Section title="风险提示">
-        <p>{detail.risk_note || "未能确认"}</p>
-        <div className="mt-5 text-sm font-semibold text-[#86868B]">可信度：{confidenceLabel(detail.confidence)}</div>
-      </Section>
+      {detail.risk_note ? (
+        <Section title="风险提示">
+          <p>{detail.risk_note}</p>
+          <div className="mt-5 text-sm font-semibold text-[#86868B]">可信度：{confidenceLabel(detail.confidence)}</div>
+        </Section>
+      ) : null}
       {detail.sources.length ? (
         <Section title="参考来源">
           <ul className="space-y-3">

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import re
 
-GENERIC_RISK_NOTE = "相关信息仍需以当事方、权威媒体或平台后续公开说明为准，注意区分事实、观点和未经证实的传播内容。"
 GENERIC_SUMMARY = "相关信息仍在更新，目前能够确认的内容有限，需结合后续公开说明继续判断。"
 GENERIC_TAKEAWAY = "相关信息仍需以后续公开说明为准"
 GENERIC_COMMENTARY = "相关讨论仍在发酵，宜先区分已确认信息和未经证实的说法。"
@@ -62,10 +61,10 @@ PUBLIC_CONTEXT_FORBIDDEN_TERMS = tuple(term for term, _ in PUBLIC_CONTEXT_REPLAC
 def sanitize_public_risk_note(value: str) -> str:
     risk_note = value.strip()
     if not risk_note:
-        return GENERIC_RISK_NOTE
+        return ""
     lowered = risk_note.lower()
     if any(term in lowered for term in TECHNICAL_RISK_TERMS):
-        return GENERIC_RISK_NOTE
+        return ""
     return risk_note
 
 
@@ -90,7 +89,7 @@ def sanitize_generated_ai_facts(values: list[str]) -> list[str]:
 
 def sanitize_generated_ai_risk_note(value: str) -> str:
     risk_note = sanitize_public_risk_note(value)
-    return sanitize_generated_ai_text(risk_note, fallback=GENERIC_RISK_NOTE)
+    return sanitize_generated_ai_text(risk_note, fallback="")
 
 
 def _compact_text(value: str) -> str:

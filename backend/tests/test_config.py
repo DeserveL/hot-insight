@@ -149,7 +149,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.ai_detail.max_retries, 3)
         self.assertEqual(config.ai_detail.timeout_seconds, 60)
         self.assertEqual(config.ai_detail.temperature, 0.2)
-        self.assertEqual(config.ai_detail.external_search, "off")
+        self.assertEqual(config.ai_detail.external_search, "auto")
         self.assertEqual(config.ai_detail.context_change_similarity_threshold, 0.92)
         self.assertEqual(config.ai_detail.context_change_length_delta, 160)
         self.assertEqual(config.ai_detail.context_change_length_ratio, 0.25)
@@ -190,10 +190,16 @@ class ConfigTests(unittest.TestCase):
         self.assertIsNone(config.ai_detail.web_search_options)
 
     def test_ai_detail_external_search_is_configurable(self) -> None:
-        with patch.dict(os.environ, {"AI_DETAIL_EXTERNAL_SEARCH": "optional"}, clear=True):
-            config = AppConfig.from_env(env_file=None)
+        for value in ("off", "optional", "required", "auto"):
+            with patch.dict(os.environ, {"AI_DETAIL_EXTERNAL_SEARCH": value}, clear=True):
+                config = AppConfig.from_env(env_file=None)
 
-        self.assertEqual(config.ai_detail.external_search, "optional")
+                self.assertEqual(config.ai_detail.external_search, value)
+
+    def test_invalid_ai_detail_external_search_raises_clear_error(self) -> None:
+        with patch.dict(os.environ, {"AI_DETAIL_EXTERNAL_SEARCH": "sometimes"}, clear=True):
+            with self.assertRaisesRegex(ValueError, r"AI_DETAIL_EXTERNAL_SEARCH.*off, optional, required, auto"):
+                AppConfig.from_env(env_file=None)
 
     def test_ai_detail_context_change_thresholds_are_configurable(self) -> None:
         with patch.dict(

@@ -5,9 +5,9 @@ import json
 import logging
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import requests
 
@@ -22,6 +22,15 @@ from backend.app.services.ai.sanitizer import (
     sanitize_generated_ai_facts,
     sanitize_generated_ai_risk_note,
     sanitize_generated_ai_text,
+)
+from backend.app.services.ai.skills import (
+    build_search_prompt,
+    build_skill_prompt,
+    classify_event_profile,
+    event_skill,
+    required_search,
+    resolve_search_mode,
+    search_enabled,
 )
 from backend.app.services.ingestion.weibo_official import fetch_weibo_official_detail_context
 
@@ -52,6 +61,7 @@ class ParsedAIDetail:
     detail: AIDetail
     search_call_count: int = 0
     search_source_count: int = 0
+    deduped_source_count: int = 0
     json_source_count: int = 0
 
 
@@ -62,6 +72,7 @@ class AIDetailResult:
     context_hash: str = ""
     search_call_count: int = 0
     search_source_count: int = 0
+    deduped_source_count: int = 0
     json_source_count: int = 0
 
     @property
@@ -113,10 +124,13 @@ class AIDetailClient:
 
         total_started = time.perf_counter()
         ai_context = context or self.prepare_context(topic)
+        event_profile = classify_event_profile(topic, ai_context.combined_context)
+        search_mode = resolve_search_mode(self.config.external_search, topic, event_profile)
         logger.info(
             (
                 "AI 调用准备完成: topic_id=%s title=%s model=%s api_mode=%s base_host=%s "
-                "prompt_version=%s context_hash=%s official_chars=%s mobile_chars=%s posts=%s max_retries=%s timeout_seconds=%s"
+                "prompt_version=%s context_hash=%s official_chars=%s mobile_chars=%s posts=%s "
+                "max_retries=%s timeout_seconds=%s event_profile=%s search_mode=%s"
             ),
             topic.id,
             topic.title,
@@ -130,19 +144,23 @@ class AIDetailClient:
             len(ai_context.realtime_posts),
             self.config.max_retries,
             self.config.timeout_seconds,
+            event_profile,
+            search_mode,
         )
-        if self.config.api_mode == "chat_completions" and self.config.external_search != "off":
+        if self.config.api_mode == "chat_completions" and search_enabled(search_mode):
             logger.warning(
                 "AI Chat Completions 搜索不保证触发: topic_id=%s model=%s suggestion=gpt-5-search-api_or_responses",
                 topic.id,
                 self.config.model,
             )
         logger.info(
-            "AI 请求配置摘要: topic_id=%s api_mode=%s tool_choice=%s search_options_sent=%s extra_payload_keys=%s",
+            "AI 请求配置摘要: topic_id=%s api_mode=%s event_profile=%s search_mode=%s tool_choice=%s search_options_sent=%s extra_payload_keys=%s",
             topic.id,
             self.config.api_mode,
-            self._tool_choice_label(),
-            self.config.api_mode == "chat_completions" and self.config.external_search != "off",
+            event_profile,
+            search_mode,
+            self._tool_choice_label(search_mode),
+            self.config.api_mode == "chat_completions" and search_enabled(search_mode),
             ",".join(sorted(self.config.extra_payload.keys())) if self.config.extra_payload else "无",
         )
 
@@ -151,13 +169,15 @@ class AIDetailClient:
             attempt_started = time.perf_counter()
             try:
                 logger.info(
-                    "AI 请求开始: topic_id=%s title=%s attempt=%s/%s model=%s api_mode=%s",
+                    "AI 请求开始: topic_id=%s title=%s attempt=%s/%s model=%s api_mode=%s event_profile=%s search_mode=%s",
                     topic.id,
                     topic.title,
                     attempt,
                     self.config.max_retries,
                     self.config.model,
                     self.config.api_mode,
+                    event_profile,
+                    search_mode,
                 )
                 response = self.session.post(
                     self._request_url(),
@@ -165,7 +185,7 @@ class AIDetailClient:
                         "Authorization": f"Bearer {self.config.api_key}",
                         "Content-Type": "application/json",
                     },
-                    json=self._build_payload(topic, ai_context),
+                    json=self._build_payload(topic, ai_context, event_profile, search_mode),
                     timeout=self.config.timeout_seconds,
                 )
                 response.raise_for_status()
@@ -173,7 +193,7 @@ class AIDetailClient:
                 logger.info(
                     (
                         "AI 请求成功: topic_id=%s title=%s attempt=%s/%s duration_ms=%.1f "
-                        "total_duration_ms=%.1f api_mode=%s search_calls=%s search_sources=%s "
+                        "total_duration_ms=%.1f api_mode=%s search_calls=%s search_sources=%s deduped_sources=%s "
                         "json_sources=%s final_sources=%s facts=%s confidence=%s takeaway=%s"
                     ),
                     topic.id,
@@ -185,6 +205,7 @@ class AIDetailClient:
                     self.config.api_mode,
                     parsed.search_call_count,
                     parsed.search_source_count,
+                    parsed.deduped_source_count,
                     parsed.json_source_count,
                     len(parsed.detail.sources),
                     len(parsed.detail.facts),
@@ -196,6 +217,7 @@ class AIDetailClient:
                     context_hash=ai_context.context_hash,
                     search_call_count=parsed.search_call_count,
                     search_source_count=parsed.search_source_count,
+                    deduped_source_count=parsed.deduped_source_count,
                     json_source_count=parsed.json_source_count,
                 )
             except Exception as exc:
@@ -226,31 +248,50 @@ class AIDetailClient:
             return f"{self.config.base_url}/responses"
         return f"{self.config.base_url}/chat/completions"
 
-    def _build_payload(self, topic: TopicCandidate, context: AIContext) -> dict[str, Any]:
+    def _build_payload(
+        self,
+        topic: TopicCandidate,
+        context: AIContext,
+        event_profile: str,
+        search_mode: str,
+    ) -> dict[str, Any]:
         if self.config.api_mode == "responses":
             payload: dict[str, Any] = {
                 "model": self.config.model,
                 "instructions": SYSTEM_PROMPT,
-                "input": build_user_prompt(topic, context=context),
+                "input": build_user_prompt(
+                    topic,
+                    context=context,
+                    event_profile=event_profile,
+                    search_enabled=search_enabled(search_mode),
+                ),
                 "temperature": self.config.temperature,
             }
-            if self.config.external_search in {"optional", "required"}:
+            if search_enabled(search_mode):
                 payload["tools"] = [{"type": "web_search"}]
                 payload["include"] = ["web_search_call.action.sources"]
-            if self.config.external_search == "required":
+            if required_search(search_mode):
                 payload["tool_choice"] = "required"
         else:
             payload = {
                 "model": self.config.model,
                 "messages": [
                     {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": build_user_prompt(topic, context=context)},
+                    {
+                        "role": "user",
+                        "content": build_user_prompt(
+                            topic,
+                            context=context,
+                            event_profile=event_profile,
+                            search_enabled=search_enabled(search_mode),
+                        ),
+                    },
                 ],
                 "temperature": self.config.temperature,
             }
-            if self.config.external_search in {"optional", "required"}:
+            if search_enabled(search_mode):
                 payload["web_search_options"] = self.config.web_search_options or {}
-                if self.config.external_search == "required":
+                if required_search(search_mode):
                     logger.warning(
                         "AI Chat Completions 模式无法强制搜索: topic_id=%s model=%s",
                         topic.id,
@@ -273,12 +314,13 @@ class AIDetailClient:
             parsed.detail,
             has_official_context=bool(context.official_context),
             has_weibo_context=bool(context.combined_context),
-            search_source_count=parsed.search_source_count,
+            search_source_count=parsed.deduped_source_count,
         )
         return ParsedAIDetail(
             detail=detail,
             search_call_count=parsed.search_call_count,
             search_source_count=parsed.search_source_count,
+            deduped_source_count=parsed.deduped_source_count,
             json_source_count=parsed.json_source_count,
         )
 
@@ -322,13 +364,20 @@ class AIDetailClient:
             )
             return "", "", topic.realtime_posts
 
-    def _tool_choice_label(self) -> str:
-        if self.config.api_mode != "responses" or self.config.external_search == "off":
+    def _tool_choice_label(self, search_mode: str) -> str:
+        if self.config.api_mode != "responses" or not search_enabled(search_mode):
             return "-"
-        return "required" if self.config.external_search == "required" else "auto"
+        return "required" if required_search(search_mode) else "auto"
 
 
-def build_user_prompt(topic: TopicCandidate, official_context: str = "", context: AIContext | None = None) -> str:
+def build_user_prompt(
+    topic: TopicCandidate,
+    official_context: str = "",
+    context: AIContext | None = None,
+    *,
+    event_profile: str = "",
+    search_enabled: bool = False,
+) -> str:
     ai_context = context
     if ai_context is None:
         ai_context = AIContext(
@@ -336,6 +385,8 @@ def build_user_prompt(topic: TopicCandidate, official_context: str = "", context
             context_hash=build_context_hash(topic, official_context),
             combined_context=official_context,
         )
+    resolved_event_profile = event_profile or classify_event_profile(topic, ai_context.combined_context)
+    skill = event_skill(resolved_event_profile)
     payload_context = {
         "title": topic.title,
         "tag": topic.tag,
@@ -357,15 +408,18 @@ def build_user_prompt(topic: TopicCandidate, official_context: str = "", context
     }
     material_digest = build_public_material_digest(topic, ai_context)
     return (
-        "请先阅读下面的公开内容摘要，再参考后面的结构化数据。"
+        "请先阅读公开内容摘要，再按分析重点生成读者快读简报。"
         "“精选微博”优先用于梳理事件主线，“相关讨论”只用于判断讨论焦点和传播风险。"
-        "外部搜索结果只能辅助核验，不得覆盖当前热搜现场。无法确认时明确写未能确认。"
         "输出给普通读者时要直接说明事件本身，少说“显示、表明、材料称”；"
         "不要使用饭圈标签化判断，不要把讨论声量写成已证实事实。"
         "输出给用户时严禁出现 JSON key、字段名或上下文变量名，例如 weibo_context、official_context、"
         "mobile_context、realtime_posts、combined、source_excerpt、context_hash；"
         "也不要出现“微博官方详情、移动端讨论、实时帖子、以上实时内容”等来源层级表述。"
         "请按 system 指定 JSON schema 返回。\n"
+        + build_skill_prompt(skill)
+        + "\n"
+        + build_search_prompt(topic, search_enabled)
+        + "\n\n"
         "公开内容摘要：\n"
         + material_digest
         + "\n\n结构化数据：\n"
@@ -467,17 +521,18 @@ def parse_chat_completion_result(payload: dict[str, Any]) -> ParsedAIDetail:
         raise ValueError("AI 响应内容为空")
 
     detail = _detail_from_text(text)
-    annotation_sources = _extract_annotation_sources(message)
+    raw_annotation_sources = _extract_annotation_sources(message)
     if isinstance(content, list):
         for item in content:
             if isinstance(item, dict):
-                annotation_sources.extend(_extract_annotation_sources(item))
-        annotation_sources = _dedupe_sources(annotation_sources)
+                raw_annotation_sources.extend(_extract_annotation_sources(item))
+    annotation_sources = _dedupe_sources(raw_annotation_sources)
     merged_detail = merge_sources(detail, annotation_sources)
     return ParsedAIDetail(
         detail=merged_detail,
         search_call_count=0,
-        search_source_count=len(annotation_sources),
+        search_source_count=len(raw_annotation_sources),
+        deduped_source_count=len(annotation_sources),
         json_source_count=len(detail.sources),
     )
 
@@ -491,12 +546,13 @@ def parse_responses_detail(payload: dict[str, Any]) -> ParsedAIDetail:
     if not text.strip():
         raise ValueError("AI 响应内容为空")
     detail = _detail_from_text(text)
-    search_sources, search_call_count = _extract_responses_sources(payload)
+    search_sources, search_call_count, raw_search_source_count = _extract_responses_sources(payload)
     merged_detail = merge_sources(detail, search_sources)
     return ParsedAIDetail(
         detail=merged_detail,
         search_call_count=search_call_count,
-        search_source_count=len(search_sources),
+        search_source_count=raw_search_source_count,
+        deduped_source_count=len(search_sources),
         json_source_count=len(detail.sources),
     )
 
@@ -568,14 +624,7 @@ def normalize_confidence(
 
 
 def merge_sources(detail: AIDetail, extra_sources: list[AIDetailSource]) -> AIDetail:
-    seen: set[str] = set()
-    merged: list[AIDetailSource] = []
-    for source in [*detail.sources, *extra_sources]:
-        key = (source.url or source.title).strip()
-        if not key or key in seen:
-            continue
-        seen.add(key)
-        merged.append(source)
+    merged = _dedupe_sources([*detail.sources, *extra_sources])
     return AIDetail(
         summary=detail.summary,
         takeaway=detail.takeaway,
@@ -635,7 +684,7 @@ def _extract_responses_text(payload: dict[str, Any]) -> str:
     return "".join(parts)
 
 
-def _extract_responses_sources(payload: dict[str, Any]) -> tuple[list[AIDetailSource], int]:
+def _extract_responses_sources(payload: dict[str, Any]) -> tuple[list[AIDetailSource], int, int]:
     sources: list[AIDetailSource] = []
     search_call_count = 0
     output = payload.get("output")
@@ -652,7 +701,8 @@ def _extract_responses_sources(payload: dict[str, Any]) -> tuple[list[AIDetailSo
                 for content_item in content:
                     if isinstance(content_item, dict):
                         sources.extend(_extract_annotation_sources(content_item))
-    return _dedupe_sources(sources), search_call_count
+    deduped_sources = _dedupe_sources(sources)
+    return deduped_sources, search_call_count, len(sources)
 
 
 def _extract_sources_from_search_call(item: dict[str, Any]) -> list[AIDetailSource]:
@@ -662,7 +712,7 @@ def _extract_sources_from_search_call(item: dict[str, Any]) -> list[AIDetailSour
     values = action.get("sources") or action.get("results") or []
     if not isinstance(values, list):
         return []
-    return _dedupe_sources([_source_from_raw(value) for value in values])
+    return [_source_from_raw(value) for value in values]
 
 
 def _extract_annotation_sources(item: dict[str, Any]) -> list[AIDetailSource]:
@@ -674,7 +724,7 @@ def _extract_annotation_sources(item: dict[str, Any]) -> list[AIDetailSource]:
         if not isinstance(annotation, dict):
             continue
         sources.append(_source_from_raw(annotation))
-    return _dedupe_sources(sources)
+    return sources
 
 
 def _source_from_raw(value: Any) -> AIDetailSource:
@@ -687,15 +737,57 @@ def _source_from_raw(value: Any) -> AIDetailSource:
 
 
 def _dedupe_sources(sources: list[AIDetailSource]) -> list[AIDetailSource]:
-    seen: set[str] = set()
-    result: list[AIDetailSource] = []
+    deduped: dict[str, AIDetailSource] = {}
     for source in sources:
-        key = (source.url or source.title).strip()
-        if not key or key in seen:
+        normalized_url = normalize_source_url(source.url)
+        title = _normalize_source_title(source.title)
+        key = normalized_url or f"title:{title.lower()}"
+        if not key or key == "title:":
             continue
-        seen.add(key)
-        result.append(source)
-    return result
+        normalized_source = replace(source, url=normalized_url, title=title)
+        existing = deduped.get(key)
+        if existing is None:
+            deduped[key] = normalized_source
+        elif not existing.title and normalized_source.title:
+            deduped[key] = normalized_source
+    return list(deduped.values())
+
+
+def normalize_source_url(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        parsed = urlparse(text)
+    except ValueError:
+        return text
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+        return text
+    query_pairs = [
+        (key, item)
+        for key, item in parse_qsl(parsed.query, keep_blank_values=True)
+        if not _is_tracking_query_param(key)
+    ]
+    query_pairs.sort(key=lambda item: (item[0], item[1]))
+    return urlunparse(
+        (
+            parsed.scheme.lower(),
+            parsed.netloc.lower(),
+            parsed.path.rstrip("/"),
+            parsed.params,
+            urlencode(query_pairs, doseq=True),
+            parsed.fragment,
+        )
+    )
+
+
+def _is_tracking_query_param(key: str) -> bool:
+    normalized = key.lower()
+    return normalized.startswith("utm_") or normalized in {"spm", "from"}
+
+
+def _normalize_source_title(value: str) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip()
 
 
 def _is_reliable_source_url(value: str) -> bool:

@@ -9,6 +9,8 @@ from backend.app.services.notifications.wecom import (
     WeComNotifier,
     build_mpnews_payload,
     cover_media_cache_key,
+    render_ai_detail_html,
+    render_topic_markdown,
 )
 
 
@@ -117,6 +119,40 @@ class NotifierTests(unittest.TestCase):
         self.assertIn("https://example.com/1", content)
         self.assertIn("https://example.com/3", content)
         self.assertNotIn("https://example.com/4", content)
+
+    def test_ai_detail_html_hides_empty_risk_section(self) -> None:
+        detail = AIDetail(
+            summary="热点梳理。",
+            takeaway="一句话结论。",
+            facts=["事实"],
+            commentary="观察。",
+            risk_note="",
+            sources=[AIDetailSource(title="来源", url="https://example.com/a")],
+            confidence="high",
+        )
+
+        html = render_ai_detail_html(detail)
+
+        self.assertNotIn("风险提示", html)
+        self.assertNotIn("核验程度", html)
+        self.assertIn("参考来源", html)
+
+    def test_topic_markdown_hides_empty_risk_section(self) -> None:
+        detail = AIDetail(
+            summary="热点梳理。",
+            takeaway="一句话结论。",
+            facts=["事实"],
+            commentary="观察。",
+            risk_note="",
+            sources=[AIDetailSource(title="来源", url="https://example.com/a")],
+            confidence="high",
+        )
+
+        markdown = render_topic_markdown(_topic("爆点新闻", "爆"), ("爆",), detail)
+
+        self.assertIn("参考来源", markdown)
+        self.assertNotIn("风险提示", markdown)
+        self.assertNotIn("核验程度", markdown)
 
     def test_uploads_official_cover_url_and_caches_media_id(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

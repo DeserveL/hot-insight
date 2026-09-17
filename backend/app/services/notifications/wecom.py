@@ -409,12 +409,20 @@ def render_ai_detail_html(ai_detail: AIDetail | None, ai_error: str = "") -> str
     if not sources:
         sources = "<li>未能确认可靠来源链接</li>"
     confidence = html.escape(confidence_label(ai_detail.confidence))
+    risk_section = (
+        _section_html(
+            "风险提示",
+            f"{html.escape(ai_detail.risk_note)}<div style='margin-top:6px;color:#666;'>核验程度：{confidence}</div>",
+        )
+        if ai_detail.risk_note
+        else ""
+    )
     return f"""
 {_section_html("一句话结论", html.escape(ai_detail.takeaway or "值得继续关注该热点后续进展。"), featured=True)}
 {_section_html("热点梳理", html.escape(ai_detail.summary or "未能确认"))}
 {_section_html("关键事实", f"<ul>{facts or '<li>未能确认</li>'}</ul>")}
 {_section_html("AI 评价", html.escape(ai_detail.commentary or "未能确认"))}
-{_section_html("风险提示", f"{html.escape(ai_detail.risk_note or '未能确认')}<div style='margin-top:6px;color:#666;'>核验程度：{confidence}</div>")}
+{risk_section}
 {_section_html("参考来源", f"<ul>{sources}</ul>")}
 """.strip()
 
@@ -437,15 +445,21 @@ def render_topic_markdown(
         return f"{base}{detail_line}{realtime_line}\n\nAI 洞察：{user_visible_ai_error(ai_error)}"
     facts = "\n".join(f"- {fact}" for fact in ai_detail.facts) or "- 未能确认"
     sources = "\n".join(f"- {source.title or source.url}: {source.url}" for source in ai_detail.sources) or "- 未能确认"
-    return (
-        f"{base}{detail_line}{realtime_line}\n\n"
-        f"一句话结论：{ai_detail.takeaway or '值得继续关注该热点后续进展。'}\n\n"
-        f"热点梳理：{ai_detail.summary}\n\n"
-        f"关键事实：\n{facts}\n\n"
-        f"AI 评价：{ai_detail.commentary or '未能确认'}\n\n"
-        f"风险提示：{ai_detail.risk_note or '未能确认'}（核验程度：{confidence_label(ai_detail.confidence)}）\n\n"
-        f"参考来源：\n{sources}"
+    risk_section = (
+        f"\n\n风险提示：{ai_detail.risk_note}（核验程度：{confidence_label(ai_detail.confidence)}）"
+        if ai_detail.risk_note
+        else ""
     )
+    sections = [
+        f"一句话结论：{ai_detail.takeaway or '值得继续关注该热点后续进展。'}",
+        f"热点梳理：{ai_detail.summary}",
+        f"关键事实：\n{facts}",
+        f"AI 评价：{ai_detail.commentary or '未能确认'}",
+    ]
+    if risk_section:
+        sections.append(risk_section.strip())
+    sections.append(f"参考来源：\n{sources}")
+    return f"{base}{detail_line}{realtime_line}\n\n" + "\n\n".join(sections)
 
 
 def render_topics_markdown(topics: list[TopicCandidate], alert_tags: tuple[str, ...]) -> str:
