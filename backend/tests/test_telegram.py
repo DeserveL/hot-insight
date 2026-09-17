@@ -95,6 +95,24 @@ class TelegramTests(unittest.TestCase):
         self.assertIn("风险提示", caption)
         self.assertIn("核验程度：低", caption)
 
+    def test_caption_hides_empty_risk_section(self) -> None:
+        caption = render_telegram_caption(
+            _topic("爆点新闻", "爆", source_id="weibo_official"),
+            AIDetail(
+                summary="摘要",
+                takeaway="一句话结论",
+                facts=[],
+                commentary="评价",
+                risk_note="",
+                sources=[],
+                confidence="high",
+            ),
+        )
+
+        self.assertIn("热点梳理", caption)
+        self.assertNotIn("风险提示", caption)
+        self.assertNotIn("核验程度", caption)
+
     def test_reply_markup_contains_detail_and_weibo_buttons(self) -> None:
         markup = build_reply_markup("https://site.test/topics/a", "https://s.weibo.com/weibo?q=a")
 
@@ -197,6 +215,29 @@ class TelegramTests(unittest.TestCase):
         self.assertTrue(session.posts[1]["url"].endswith("/sendMessage"))
         self.assertIn("text", session.posts[1]["json"])
 
+    def test_falls_back_to_message_without_retry_when_telegram_cannot_fetch_photo_url(self) -> None:
+        session = FakeTelegramSession(
+            [
+                {"ok": False, "description": "Bad Request: failed to get HTTP URL content"},
+                {"ok": True, "result": {"message_id": "message-url-fallback"}},
+            ]
+        )
+        notifier = TelegramNotifier(_config(max_retries=3), session=session)
+
+        result = notifier.send_topic(
+            _topic("爆点新闻", "爆", cover_image_url="https://wx2.sinaimg.cn/orj480/hot.jpg"),
+            ("爆",),
+            detail_url="https://site.test/topics/a",
+        )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.external_message_id, "message-url-fallback")
+        self.assertEqual(len(session.posts), 2)
+        self.assertTrue(session.posts[0]["url"].endswith("/sendPhoto"))
+        self.assertTrue(session.posts[1]["url"].endswith("/sendMessage"))
+        self.assertIn("text", session.posts[1]["json"])
+        self.assertIn("查看详情", session.posts[1]["json"]["reply_markup"]["inline_keyboard"][0][0]["text"])
+
     def test_keeps_failure_when_photo_and_message_fallback_both_fail(self) -> None:
         session = FakeTelegramSession(
             [
@@ -215,6 +256,26 @@ class TelegramTests(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertIn("wrong type of the web page content", result.error_message)
         self.assertIn("文本降级失败", result.error_message)
+        self.assertEqual(len(session.posts), 2)
+
+    def test_keeps_failure_when_url_fetch_and_message_fallback_both_fail(self) -> None:
+        session = FakeTelegramSession(
+            [
+                {"ok": False, "description": "Bad Request: failed to get HTTP URL content"},
+                {"ok": False, "description": "Bad Request: chat not found"},
+            ]
+        )
+        notifier = TelegramNotifier(_config(max_retries=1), session=session)
+
+        result = notifier.send_topic(
+            _topic("爆点新闻", "爆", cover_image_url="https://wx2.sinaimg.cn/orj480/hot.jpg"),
+            ("爆",),
+        )
+
+        self.assertFalse(result.ok)
+        self.assertIn("failed to get HTTP URL content", result.error_message)
+        self.assertIn("文本降级失败", result.error_message)
+        self.assertIn("chat not found", result.error_message)
         self.assertEqual(len(session.posts), 2)
 
     def test_http_error_uses_platform_description_without_bot_url(self) -> None:

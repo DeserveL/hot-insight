@@ -99,16 +99,24 @@ class TelegramNotifier:
         result = self._send_photo_by_url(topic.cover_image_url, caption, reply_markup)
         if result.ok and result.media_file_id and self.asset_store is not None:
             self.asset_store.set_integration_asset("telegram", file_cache_key(topic.cover_image_url), result.media_file_id)
-        if not result.ok and _is_photo_url_content_type_error(result.error_message):
+        if not result.ok and _is_photo_url_fetch_error(result.error_message):
+            fallback = self._send_message(caption, reply_markup)
+            if fallback.ok:
+                logger.info(
+                    "Telegram 封面 URL 抓取失败，已降级为文本消息: topic_id=%s title=%s error=%s message_id=%s",
+                    topic.id,
+                    topic.title,
+                    redact_sensitive_text(result.error_message),
+                    fallback.external_message_id or "-",
+                )
+                return fallback
             logger.warning(
-                "Telegram 封面 URL 内容类型不可用，降级为文本消息: topic_id=%s title=%s error=%s",
+                "Telegram 封面 URL 抓取失败，文本消息降级失败: topic_id=%s title=%s photo_error=%s message_error=%s",
                 topic.id,
                 topic.title,
                 redact_sensitive_text(result.error_message),
+                redact_sensitive_text(fallback.error_message),
             )
-            fallback = self._send_message(caption, reply_markup)
-            if fallback.ok:
-                return fallback
             return TelegramSendResult(
                 False,
                 f"{result.error_message}; 文本降级失败: {fallback.error_message}",
@@ -163,14 +171,14 @@ class TelegramNotifier:
                 if not _is_http_success(response):
                     last_error = _extract_telegram_error(response, f"Telegram {method} HTTP 请求失败")
                     logger.warning("Telegram %s 返回失败: %s", method, redact_sensitive_text(last_error))
-                    if method == "sendPhoto" and _is_photo_url_content_type_error(last_error):
+                    if method == "sendPhoto" and _is_photo_url_fetch_error(last_error):
                         return TelegramSendResult(False, last_error)
                     continue
                 result = _parse_telegram_response(response.json())
                 if (
                     result.ok
                     or _is_file_id_invalid(result.error_message)
-                    or (method == "sendPhoto" and _is_photo_url_content_type_error(result.error_message))
+                    or (method == "sendPhoto" and _is_photo_url_fetch_error(result.error_message))
                 ):
                     return result
                 last_error = redact_sensitive_text(result.error_message)
@@ -202,7 +210,7 @@ def render_telegram_caption(
     if ai_detail is not None:
         takeaway = compact_text(ai_detail.takeaway or "值得继续关注该热点后续进展。", 120)
         summary = compact_text(ai_detail.summary or "未能确认", 180)
-        risk_note = compact_text(ai_detail.risk_note or "相关信息仍需以后续公开说明为准。", 120)
+        risk_note = compact_text(ai_detail.risk_note, 120)
         lines.extend(
             [
                 "",
@@ -211,12 +219,17 @@ def render_telegram_caption(
                 "",
                 "<b>热点梳理</b>",
                 html.escape(summary),
-                "",
-                "<b>风险提示</b>",
-                html.escape(risk_note),
-                f"核验程度：{html.escape(confidence_label(ai_detail.confidence))}",
             ]
         )
+        if risk_note:
+            lines.extend(
+                [
+                    "",
+                    "<b>风险提示</b>",
+                    html.escape(risk_note),
+                    f"核验程度：{html.escape(confidence_label(ai_detail.confidence))}",
+                ]
+            )
     else:
         lines.extend(["", html.escape(user_visible_ai_error(ai_error))])
     if topic.source_excerpt.strip():
@@ -297,9 +310,12 @@ def _is_file_id_invalid(error_message: str) -> bool:
     return "file_id" in lowered or "file identifier" in lowered or "wrong file" in lowered
 
 
-def _is_photo_url_content_type_error(error_message: str) -> bool:
+def _is_photo_url_fetch_error(error_message: str) -> bool:
     lowered = error_message.lower()
-    return "wrong type of the web page content" in lowered
+    return (
+        "failed to get http url content" in lowered
+        or "wrong type of the web page content" in lowered
+    )
 
 
 def _truncate(text: str, limit: int) -> str:
