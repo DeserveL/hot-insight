@@ -533,7 +533,11 @@ def _generate_ai_detail_if_missing(
             api_mode=config.ai_detail.api_mode,
             context_hash=getattr(result, "context_hash", "") or context.context_hash,
             context_material_json=context_material_json,
-            search_source_count=getattr(result, "search_source_count", 0),
+            search_source_count=getattr(
+                result,
+                "deduped_source_count",
+                getattr(result, "search_source_count", 0),
+            ),
         )
         logger.info(
             "AI 洞察生成成功: topic_id=%s title=%s model=%s api_mode=%s search_sources=%s duration_ms=%.1f",
@@ -556,7 +560,11 @@ def _generate_ai_detail_if_missing(
         context_hash=getattr(result, "context_hash", "") or context.context_hash,
         failed_retry_context_hash=context.context_hash if retrying_failed_cache and context.combined_context else "",
         context_material_json=context_material_json,
-        search_source_count=getattr(result, "search_source_count", 0),
+        search_source_count=getattr(
+            result,
+            "deduped_source_count",
+            getattr(result, "search_source_count", 0),
+        ),
     )
     logger.warning(
         "AI 洞察生成失败并已缓存: topic_id=%s title=%s model=%s api_mode=%s duration_ms=%.1f error=%s",

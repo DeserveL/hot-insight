@@ -352,11 +352,12 @@ class AIDetailTests(unittest.TestCase):
         prompt = build_user_prompt(_topic(), official_context="公开说明内容")
         readable_prompt = prompt.split("结构化数据：", 1)[0]
 
-        self.assertEqual(PROMPT_VERSION, "2026-09-17-reader-brief-v2")
+        self.assertEqual(PROMPT_VERSION, "2026-09-17-reader-brief-v3")
         self.assertIn("本条热点的分析重点", readable_prompt)
         self.assertIn("读者价值", readable_prompt)
         self.assertIn("值班编辑", SYSTEM_PROMPT)
         self.assertIn("没有实际风险时必须返回空字符串", SYSTEM_PROMPT)
+        self.assertIn("不得输出 Markdown 链接或 URL", SYSTEM_PROMPT)
         self.assertNotIn("请改写成", readable_prompt)
         self.assertIn("也不要出现", readable_prompt)
         self.assertIn("关键事实要能对应输入材料、当事方发布、权威媒体或平台公开信息", SYSTEM_PROMPT)
@@ -525,6 +526,36 @@ class AIDetailTests(unittest.TestCase):
         sanitized = sanitize_ai_detail(detail)
 
         self.assertEqual(sanitized.risk_note, "")
+
+    def test_sanitize_generated_detail_removes_markdown_citations(self) -> None:
+        detail = parse_chat_completion_detail(
+            _ai_payload(
+                summary="事件已有公开说明。([example.com](https://example.com/a?utm_source=openai))",
+                takeaway="[核心结论](https://example.com/a)",
+                facts=["据媒体报道，事实已确认。([example.com](https://example.com/a))"],
+                commentary="[观察内容](https://example.com/a)",
+                risk_note="相关说法仍待确认。([example.com](https://example.com/a))",
+            )
+        )
+
+        sanitized = sanitize_ai_detail(detail)
+        combined = " ".join(
+            [
+                sanitized.summary,
+                sanitized.takeaway,
+                *sanitized.facts,
+                sanitized.commentary,
+                sanitized.risk_note,
+            ]
+        )
+
+        self.assertNotIn("](", combined)
+        self.assertNotIn("https://example.com/a", combined)
+        self.assertIn("事件已有公开说明。", sanitized.summary)
+        self.assertIn("核心结论", sanitized.takeaway)
+        self.assertIn("据媒体报道，事实已确认。", sanitized.facts[0])
+        self.assertEqual(len(sanitized.sources), 1)
+        self.assertEqual(sanitized.sources[0].url, "https://example.com")
 
     def test_sanitize_generated_detail_hides_context_keys_in_all_fields(self) -> None:
         detail = parse_chat_completion_detail(

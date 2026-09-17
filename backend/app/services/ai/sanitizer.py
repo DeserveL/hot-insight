@@ -72,6 +72,7 @@ def sanitize_generated_ai_text(value: str, *, fallback: str) -> str:
     text = _compact_text(value)
     if not text:
         return fallback
+    text = _remove_markdown_citations(text)
     text = _replace_public_context_terms(text)
     if _contains_forbidden_public_term(text):
         return fallback
@@ -94,6 +95,13 @@ def sanitize_generated_ai_risk_note(value: str) -> str:
 
 def _compact_text(value: str) -> str:
     return re.sub(r"\s+", " ", str(value or "").strip())
+
+
+def _remove_markdown_citations(value: str) -> str:
+    text = value
+    text = re.sub(r"\s*\(\s*\[[^\]]+\]\([^)]+\)\s*\)", "", text)
+    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
+    return text
 
 
 def _replace_public_context_terms(value: str) -> str:

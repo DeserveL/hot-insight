@@ -78,6 +78,8 @@ class FakeAIDetailClient:
         self.calls: list[TopicCandidate] = []
         self.detail: AIDetail | None = None
         self.error_message = "fake ai disabled"
+        self.search_source_count = 0
+        self.deduped_source_count: int | None = None
 
     def prepare_context(self, topic: TopicCandidate) -> AIContext:
         official_context = topic.official_context or (
@@ -108,7 +110,12 @@ class FakeAIDetailClient:
                 "detail": self.detail,
                 "error_message": self.error_message,
                 "context_hash": context.context_hash if context else build_context_hash(topic, topic.source_excerpt),
-                "search_source_count": 0,
+                "search_source_count": self.search_source_count,
+                "deduped_source_count": (
+                    self.deduped_source_count
+                    if self.deduped_source_count is not None
+                    else self.search_source_count
+                ),
             },
         )()
 
@@ -586,6 +593,24 @@ class ServiceTests(unittest.TestCase):
             self.assertEqual(result, "success")
             self.assertEqual([topic.title for topic in ai_client.calls], ["重大变化热点"])
             self.assertEqual(record["context_hash"], build_context_hash(changed_topic, new_text))
+            repository.close()
+
+    def test_ai_insight_stores_deduped_search_source_count(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = _config(temp_dir)
+            repository = AppRepository(config.database_path)
+            topic = _topic("来源去重热点", "爆")
+            repository.save_topics([topic])
+            ai_client = FakeAIDetailClient()
+            ai_client.detail = _detail()
+            ai_client.search_source_count = 4
+            ai_client.deduped_source_count = 2
+
+            result = _generate_ai_detail_if_missing(config, repository, ai_client, topic)
+            record = repository.get_ai_insight_record(topic.id)
+
+            self.assertEqual(result, "success")
+            self.assertEqual(record["search_source_count"], 2)
             repository.close()
 
     def test_failed_ai_cache_does_not_retry_for_minor_context_change(self) -> None:
