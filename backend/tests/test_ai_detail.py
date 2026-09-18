@@ -97,6 +97,63 @@ class AIDetailTests(unittest.TestCase):
         self.assertTrue(result.ok)
         self.assertEqual(session.posts[0]["json"]["tool_choice"], "required")
 
+    def test_responses_request_sends_reasoning_effort(self) -> None:
+        session = FakeSession([FakeResponse(_responses_payload())])
+        client = AIDetailClient(
+            _config(api_mode="responses", external_search="off", reasoning_effort="low"),
+            session=session,
+        )
+
+        result = client.generate(_topic())
+
+        self.assertTrue(result.ok)
+        self.assertEqual(session.posts[0]["json"]["reasoning"], {"effort": "low"})
+
+    def test_responses_request_omits_reasoning_when_effort_is_empty(self) -> None:
+        session = FakeSession([FakeResponse(_responses_payload())])
+        client = AIDetailClient(
+            _config(api_mode="responses", external_search="off", reasoning_effort=""),
+            session=session,
+        )
+
+        result = client.generate(_topic())
+
+        self.assertTrue(result.ok)
+        self.assertNotIn("reasoning", session.posts[0]["json"])
+
+    def test_chat_completions_request_sends_reasoning_effort(self) -> None:
+        session = FakeSession([FakeResponse(_ai_payload())])
+        client = AIDetailClient(
+            _config(api_mode="chat_completions", external_search="off", reasoning_effort="high"),
+            session=session,
+        )
+
+        result = client.generate(_topic())
+
+        self.assertTrue(result.ok)
+        self.assertEqual(session.posts[0]["json"]["reasoning_effort"], "high")
+
+    def test_reasoning_fields_cannot_be_overridden_by_extra_payload(self) -> None:
+        session = FakeSession([FakeResponse(_ai_payload())])
+        client = AIDetailClient(
+            _config(
+                api_mode="chat_completions",
+                external_search="off",
+                reasoning_effort="medium",
+                extra_payload={
+                    "reasoning_effort": "max",
+                    "reasoning": {"effort": "max"},
+                },
+            ),
+            session=session,
+        )
+
+        result = client.generate(_topic())
+
+        self.assertTrue(result.ok)
+        self.assertEqual(session.posts[0]["json"]["reasoning_effort"], "medium")
+        self.assertNotIn("reasoning", session.posts[0]["json"])
+
     def test_ai_success_log_contains_deduped_source_count(self) -> None:
         session = FakeSession([FakeResponse(_responses_payload())])
         client = AIDetailClient(_config(api_mode="responses", external_search="required"), session=session)
@@ -106,6 +163,7 @@ class AIDetailTests(unittest.TestCase):
 
         self.assertTrue(result.ok)
         self.assertIn("deduped_sources=1", "\n".join(logs.output))
+        self.assertIn("reasoning_effort=medium", "\n".join(logs.output))
 
     def test_responses_auto_search_enables_required_tools_for_explosive_topic(self) -> None:
         session = FakeSession([FakeResponse(_responses_payload())])
@@ -690,6 +748,7 @@ def _config(
     extra_payload: dict | None = None,
     api_mode: str = "chat_completions",
     external_search: str = "off",
+    reasoning_effort: str = "medium",
 ) -> AIDetailConfig:
     return AIDetailConfig(
         enabled=True,
@@ -700,6 +759,7 @@ def _config(
         max_retries=max_retries,
         timeout_seconds=30,
         temperature=0.2,
+        reasoning_effort=reasoning_effort,
         external_search=external_search,
         web_search_options=web_search_options,
         extra_payload=extra_payload or {},

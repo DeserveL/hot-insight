@@ -17,6 +17,8 @@ DEFAULT_TAG_RECURRENCE_HOURS = {"爆": 12, "沸": 12, "热": 24}
 DEFAULT_HOT_TERM_EPISODE_GAP_HOURS = 24
 DEFAULT_WEIBO_SOURCE_ORDER = ("weibo_official", "xk", "xunjinlu", "xxapi", "nsuuu")
 DEFAULT_NOTIFICATION_COVER = Path("backend/app/assets/notification-covers/default-cover.png")
+DEFAULT_AI_DETAIL_REASONING_EFFORT = "medium"
+AI_DETAIL_REASONING_EFFORTS = ("none", "low", "medium", "high", "xhigh", "max")
 
 
 @dataclass(frozen=True)
@@ -64,6 +66,7 @@ class AIDetailConfig:
     max_retries: int = 3
     timeout_seconds: int = 60
     temperature: float = 0.2
+    reasoning_effort: str = DEFAULT_AI_DETAIL_REASONING_EFFORT
     external_search: str = "auto"
     context_change_similarity_threshold: float = 0.92
     context_change_length_delta: int = 160
@@ -206,6 +209,9 @@ def _load_ai_detail_config() -> AIDetailConfig:
         max_retries=max(_int_env("AI_DETAIL_MAX_RETRIES", 3), 1),
         timeout_seconds=max(_int_env("AI_DETAIL_TIMEOUT_SECONDS", 60), 1),
         temperature=_float_env("AI_DETAIL_TEMPERATURE", 0.2),
+        reasoning_effort=_reasoning_effort_env(
+            os.getenv("AI_DETAIL_REASONING_EFFORT", DEFAULT_AI_DETAIL_REASONING_EFFORT)
+        ),
         external_search=_external_search_env(os.getenv("AI_DETAIL_EXTERNAL_SEARCH", "auto")),
         context_change_similarity_threshold=max(
             min(_float_env("AI_DETAIL_CONTEXT_CHANGE_SIMILARITY_THRESHOLD", 0.92), 1.0),
@@ -309,6 +315,19 @@ def _external_search_env(value: str | None) -> str:
     if normalized not in {"off", "optional", "required", "auto"}:
         raise ValueError(
             "AI_DETAIL_EXTERNAL_SEARCH must be one of off, optional, required, auto, "
+            f"got {normalized!r}"
+        )
+    return normalized
+
+
+def _reasoning_effort_env(value: str | None) -> str:
+    normalized = str(value or "").strip().lower()
+    if not normalized:
+        return ""
+    if normalized not in AI_DETAIL_REASONING_EFFORTS:
+        allowed = ", ".join(AI_DETAIL_REASONING_EFFORTS)
+        raise ValueError(
+            f"AI_DETAIL_REASONING_EFFORT must be one of {allowed}, or empty to use the model default, "
             f"got {normalized!r}"
         )
     return normalized

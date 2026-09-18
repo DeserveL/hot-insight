@@ -160,6 +160,7 @@ AI_DETAIL_API_KEY=
 AI_DETAIL_MODEL=
 AI_DETAIL_API_MODE=responses
 AI_DETAIL_EXTERNAL_SEARCH=auto
+AI_DETAIL_REASONING_EFFORT=medium
 AI_DETAIL_CONTEXT_CHANGE_SIMILARITY_THRESHOLD=0.92
 AI_DETAIL_CONTEXT_CHANGE_LENGTH_DELTA=160
 AI_DETAIL_CONTEXT_CHANGE_LENGTH_RATIO=0.25
@@ -168,6 +169,8 @@ AI_DETAIL_EXTRA_PAYLOAD_JSON={}
 ```
 
 AI 洞察默认以微博官方详情和微博移动端实时词页为主要材料，并按事件价值动态联网搜索：`爆`、`沸`，以及突发公共事件、官方发布、辟谣核验类热点会启用外部搜索；普通话题优先使用微博材料，控制调用成本。`AI_DETAIL_EXTERNAL_SEARCH` 也可设为 `off`、`optional` 或 `required`；若服务商只支持 Chat Completions，可将 `AI_DETAIL_API_MODE` 改为 `chat_completions`，并按服务商要求配置 `AI_DETAIL_WEB_SEARCH_OPTIONS`。
+
+`AI_DETAIL_REASONING_EFFORT` 用于设置模型思考等级，可选 `none`、`low`、`medium`、`high`、`xhigh`、`max`；默认 `medium`，留空表示不发送该参数并使用模型默认值。Responses API 会发送 `reasoning.effort`，Chat Completions API 会发送 `reasoning_effort`。修改该配置不会触发已生成 AI 洞察重新计算。
 
 外部搜索优先采用近 7 天内且与当前热搜词直接相关的来源，旧来源只作为背景补充；返回来源会先去掉常见跟踪参数并按规范化 URL 去重，避免同一链接被重复计入。
 

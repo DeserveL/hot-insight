@@ -87,6 +87,8 @@ class LoggingTests(unittest.TestCase):
         self.assertNotIn("webhook-key", summary_text)
         self.assertIn("wecom_health_webhook_configured", summary_text)
         self.assertIn("ai_detail_available", summary_text)
+        self.assertIn("ai_detail_reasoning_effort", summary_text)
+        self.assertIn("medium", summary_text)
 
     def test_run_once_logs_key_flow_with_same_run_id(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

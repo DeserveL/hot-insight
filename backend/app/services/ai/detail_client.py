@@ -46,6 +46,8 @@ PROTECTED_EXTRA_PAYLOAD_KEYS = {
     "tool_choice",
     "include",
     "stream",
+    "reasoning",
+    "reasoning_effort",
 }
 @dataclass(frozen=True)
 class AIContext:
@@ -130,7 +132,7 @@ class AIDetailClient:
             (
                 "AI 调用准备完成: topic_id=%s title=%s model=%s api_mode=%s base_host=%s "
                 "prompt_version=%s context_hash=%s official_chars=%s mobile_chars=%s posts=%s "
-                "max_retries=%s timeout_seconds=%s event_profile=%s search_mode=%s"
+                "max_retries=%s timeout_seconds=%s reasoning_effort=%s event_profile=%s search_mode=%s"
             ),
             topic.id,
             topic.title,
@@ -144,6 +146,7 @@ class AIDetailClient:
             len(ai_context.realtime_posts),
             self.config.max_retries,
             self.config.timeout_seconds,
+            self.config.reasoning_effort or "model_default",
             event_profile,
             search_mode,
         )
@@ -154,9 +157,10 @@ class AIDetailClient:
                 self.config.model,
             )
         logger.info(
-            "AI 请求配置摘要: topic_id=%s api_mode=%s event_profile=%s search_mode=%s tool_choice=%s search_options_sent=%s extra_payload_keys=%s",
+            "AI 请求配置摘要: topic_id=%s api_mode=%s reasoning_effort=%s event_profile=%s search_mode=%s tool_choice=%s search_options_sent=%s extra_payload_keys=%s",
             topic.id,
             self.config.api_mode,
+            self.config.reasoning_effort or "model_default",
             event_profile,
             search_mode,
             self._tool_choice_label(search_mode),
@@ -169,13 +173,14 @@ class AIDetailClient:
             attempt_started = time.perf_counter()
             try:
                 logger.info(
-                    "AI 请求开始: topic_id=%s title=%s attempt=%s/%s model=%s api_mode=%s event_profile=%s search_mode=%s",
+                    "AI 请求开始: topic_id=%s title=%s attempt=%s/%s model=%s api_mode=%s reasoning_effort=%s event_profile=%s search_mode=%s",
                     topic.id,
                     topic.title,
                     attempt,
                     self.config.max_retries,
                     self.config.model,
                     self.config.api_mode,
+                    self.config.reasoning_effort or "model_default",
                     event_profile,
                     search_mode,
                 )
@@ -267,6 +272,8 @@ class AIDetailClient:
                 ),
                 "temperature": self.config.temperature,
             }
+            if self.config.reasoning_effort:
+                payload["reasoning"] = {"effort": self.config.reasoning_effort}
             if search_enabled(search_mode):
                 payload["tools"] = [{"type": "web_search"}]
                 payload["include"] = ["web_search_call.action.sources"]
@@ -289,6 +296,8 @@ class AIDetailClient:
                 ],
                 "temperature": self.config.temperature,
             }
+            if self.config.reasoning_effort:
+                payload["reasoning_effort"] = self.config.reasoning_effort
             if search_enabled(search_mode):
                 payload["web_search_options"] = self.config.web_search_options or {}
                 if required_search(search_mode):

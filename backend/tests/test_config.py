@@ -156,6 +156,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.ai_detail.max_retries, 3)
         self.assertEqual(config.ai_detail.timeout_seconds, 60)
         self.assertEqual(config.ai_detail.temperature, 0.2)
+        self.assertEqual(config.ai_detail.reasoning_effort, "medium")
         self.assertEqual(config.ai_detail.external_search, "auto")
         self.assertEqual(config.ai_detail.context_change_similarity_threshold, 0.92)
         self.assertEqual(config.ai_detail.context_change_length_delta, 160)
@@ -172,6 +173,27 @@ class ConfigTests(unittest.TestCase):
             config = AppConfig.from_env(env_file=None)
 
         self.assertEqual(config.ai_detail.extra_payload, {"metadata": {"search": True}})
+
+    def test_ai_detail_reasoning_effort_is_configurable(self) -> None:
+        for value in ("none", "low", "medium", "high", "xhigh", "max"):
+            with patch.dict(os.environ, {"AI_DETAIL_REASONING_EFFORT": value}, clear=True):
+                config = AppConfig.from_env(env_file=None)
+
+                self.assertEqual(config.ai_detail.reasoning_effort, value)
+
+    def test_empty_ai_detail_reasoning_effort_uses_model_default(self) -> None:
+        with patch.dict(os.environ, {"AI_DETAIL_REASONING_EFFORT": ""}, clear=True):
+            config = AppConfig.from_env(env_file=None)
+
+        self.assertEqual(config.ai_detail.reasoning_effort, "")
+
+    def test_invalid_ai_detail_reasoning_effort_raises_clear_error(self) -> None:
+        with patch.dict(os.environ, {"AI_DETAIL_REASONING_EFFORT": "very-high"}, clear=True):
+            with self.assertRaisesRegex(
+                ValueError,
+                r"AI_DETAIL_REASONING_EFFORT.*none, low, medium, high, xhigh, max",
+            ):
+                AppConfig.from_env(env_file=None)
 
     def test_notification_and_telegram_env(self) -> None:
         with patch.dict(

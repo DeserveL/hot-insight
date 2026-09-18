@@ -132,6 +132,7 @@ def runtime_config_summary(config: AppConfig, scheduler_enabled: bool) -> dict[s
         "ai_detail_available": config.ai_detail.available,
         "ai_detail_api_mode": config.ai_detail.api_mode,
         "ai_detail_external_search": config.ai_detail.external_search,
+        "ai_detail_reasoning_effort": config.ai_detail.reasoning_effort,
         "ai_detail_model_configured": bool(config.ai_detail.model),
         "log_file_enabled": config.log_file_enabled,
         "log_file_path": str(config.log_file_path),
